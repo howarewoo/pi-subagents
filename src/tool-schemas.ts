@@ -36,6 +36,12 @@ const assignment = {
   ),
   models: Type.Optional(Type.Array(modelSelection, { maxItems: 64 })),
   model: Type.Optional(modelSelection),
+  fallback: Type.Optional(
+    Type.Boolean({
+      description:
+        "Enable the operator profile chain; explicit model overrides remain pinned unless true. false disables chaining.",
+    }),
+  ),
   assignment: Type.Optional(Type.String({ minLength: 1 })),
   taskFile: Type.Optional(Type.String({ minLength: 1 })),
   resultSchema: Type.Optional(Type.Unknown()),

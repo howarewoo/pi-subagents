@@ -150,11 +150,27 @@ Task files have a narrower contract: they must resolve inside the selected works
 
 ### Models and authentication
 
-By default, a child uses the selected parent model and effort; nested work inherits its parent's effective selection unless configured otherwise. Explicit overrides require exact operator-approved provider/model/effort grants. Validation checks the public provider, parent scope, configured authentication, finite model limits, and supported effort. Unsupported virtual routing, fallback, or effort coercion fails visibly.
+By default, a child uses the selected parent model and effort; nested work inherits its parent's effective selection unless configured otherwise. Explicit overrides require exact operator-approved provider/model/effort grants. Validation checks the public provider, parent scope, configured authentication, finite model limits, and supported effort. Unsupported generic virtual routing or effort coercion fails visibly. A chain-enabled profile instead starts at its own first available authorized physical target, independently of the parent selection.
 
 The child runtime uses an in-memory credential store and disables independent model-network discovery. Its provider adapters forward inference to the parent model registry, which retains authentication and refresh ownership. Credentials are not copied into the task's `agent/` directory.
 
-An optional role `prewalk` policy switches the same conversation once to an explicitly granted target after a completed `edit` or `write` tool result. It is not a repository scan. Explicit per-task model selection suppresses that switch. Current model policy is revalidated at turn boundaries; the coordinator records whether prewalk is armed, handed off, suppressed, or a no-op. See [advanced policies](docs/advanced-policies.md).
+Profile `models` grants and ordered `fallback` policy are distinct. Task overrides remain pinned
+unless explicitly opted into their profile-chain suffix; project/task narrowing cannot add or
+reorder targets. `model-fallback.ts` owns chain validation/availability and error classification.
+The child-owned extension observes native transient retries (two), handles quota/backoff and
+post-retry advancement through public `agent_before_settle`, and omits failed drafts with
+append-only context edits. It does not run a second agent/tool loop. An owner AbortController
+covers boundary backoff because Pi's low-level turn signal is absent there; coordinator
+pause/stop/disposal abort it before drain. Actual dispatch callbacks charge cumulative budgets.
+
+Retained sessions preserve route, failure count, physical attempt/skip evidence and budgets.
+An exhausted chain never wraps; an idle root-operator reset revalidates and resets routing only,
+without inference or renewed budgets/deadline. A reset failed window can explicitly resume;
+its prior failed outcome remains evidence. Changed chain identity requires explicit reset.
+State is retained only for the owning parent lifetime. No main-thread fallback package,
+configuration, runtime state or parent virtual router is imported, read or executed.
+
+An optional role `prewalk` policy switches the same conversation once to an explicitly granted target after a completed `edit` or `write` tool result. It is not a repository scan. Explicit per-task model selection suppresses that switch. Current model policy is revalidated at turn boundaries; the coordinator records whether prewalk is armed, handed off, suppressed, or a no-op. Fallback and prewalk together reject. See [advanced policies](docs/advanced-policies.md).
 
 ## Coordination, presence, and generations
 

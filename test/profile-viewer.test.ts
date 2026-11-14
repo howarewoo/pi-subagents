@@ -447,3 +447,23 @@ test("paging, line scrolling and resize clamping keep the footer and full final 
   viewer.handleInput!("\x1b[H");
   assert.match(render(42), /Description/);
 });
+
+test("configured fallback chains are visible separately from unordered model grants", () => {
+  const primary = { provider: "primary-chain-marker", id: "primary", effort: "high" as const };
+  const backup = { provider: "backup-chain-marker", id: "backup", effort: "low" as const };
+  const viewer = createProfileViewer(
+    [{ ...bundledProfiles()[0], models: [backup, primary], fallback: [primary, backup] }],
+    theme,
+    keys,
+    () => {},
+    () => {},
+    () => 30,
+  );
+  for (const width of [120, 42]) {
+    const output = scrollThrough(viewer, width).replace(/\s/g, "");
+    assert.match(output, /Fallbackchain\(routing,notgrants\)/);
+    assert.match(output, /primary-chain-marker/);
+    assert.match(output, /backup-chain-marker/);
+    assert.match(output, /Modeldefault\(unchained\)/);
+  }
+});

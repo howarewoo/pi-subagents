@@ -37,3 +37,20 @@ On Windows, Node's POSIX mode bits do not establish equivalent access control: p
 depends on the account and inherited filesystem ACLs. These modes are not an ACL
 framework or a sandbox against the same OS account, privileged processes, delegated
 tools or external filesystem changes. Protect parent session storage accordingly.
+
+## Profile fallback destinations
+
+An operator-owned profile `fallback` chain explicitly authorizes sending the child's
+conversation and tool results to each listed provider, subject to exact model/effort grants
+and parent scopes. The `models` grant list alone never enables ordered routing. Project/task
+inputs can narrow or disable a chain, not introduce or reorder providers. Review every
+chain destination for the sensitivity of the task; never put credentials in chain settings.
+Authentication stays in the parent registry and no parent router/config/state is inherited.
+
+Retries and failed requests can incur provider charges. Every dispatched attempt uses the
+same cumulative request budget and deadline ownership. Failed streamed drafts stay in raw
+transcripts for audit, while append-only edits omit them from future model context. Completed
+tool results are not replayed by SDK recovery, but no exactly-once external-effect guarantee
+is made. Status/transcripts contain physical attempt and skip evidence and require the same
+storage protection as other task output. Reset is an idle root-operator command, not model
+or child-tool authority, and cannot replenish budgets or bypass revoked scopes/grants.

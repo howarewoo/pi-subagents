@@ -89,3 +89,40 @@ test("selected skills are explicit and project/ambient executable resources cann
     2,
   );
 });
+
+test("public registry dispatch gate does not charge a physical attempt when request-time auth fails", async (t) => {
+  const fx = await fixture(t);
+  const captured = await fx.direct("capture adapter context");
+  await fx.coordinator.wait(captured);
+  let configured = true;
+  let dispatched = 0;
+  let charged = 0;
+  const base = fx.model.provider;
+  fx.runtime.registerNativeProvider({
+    ...base,
+    auth: {
+      apiKey: {
+        name: "controlled",
+        resolve: async () => (configured ? { auth: { apiKey: "ephemeral-sentinel" } } : undefined),
+      },
+    },
+    streamSimple: (model, context, options) => {
+      dispatched++;
+      return base.streamSimple(model, context, options);
+    },
+  });
+  await fx.runtime.setRuntimeApiKey(base.id, "configured-sentinel");
+  const { parentModelRuntime } = await import("../src/model-adapter.ts");
+  const runtime = await parentModelRuntime(fx.context, join(fx.root, "adapter"), () => {
+    charged++;
+  });
+  configured = false;
+  const message = await runtime
+    .streamSimple(fx.model.getModel(), {
+      messages: [{ role: "user", content: "must not dispatch", timestamp: Date.now() }],
+    })
+    .result();
+  assert.equal(message.stopReason, "error");
+  assert.equal(dispatched, 0);
+  assert.equal(charged, 0);
+});

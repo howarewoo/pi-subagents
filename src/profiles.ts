@@ -100,6 +100,7 @@ function specialize(base: Profile, value: unknown, operator: boolean): Profile {
         "models",
         "model",
         "prewalk",
+        "fallback",
       ].includes(key)
     )
       throw new Error(`Unsupported profile field: ${key}`);

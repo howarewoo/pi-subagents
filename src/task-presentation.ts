@@ -94,6 +94,11 @@ export function taskCard(child: ChildSnapshot | undefined, expanded = false): st
     `${child.model.provider}/${child.model.id} · effort ${child.effort ?? "unavailable"}`,
     truncateToWidth(lineText(activity(child)), 240, "… [preview truncated]"),
     `Prewalk ${child.prewalk ? JSON.stringify(child.prewalk) : "off"} · advisor unavailable`,
+    ...(child.fallback
+      ? [
+          `Fallback ${child.fallback.exhausted ? "exhausted" : `target ${child.fallback.index + 1}/${child.fallback.chain.length}`} · failures ${child.fallback.failures} · attempts ${child.fallback.attempts.length} · skipped ${child.fallback.skipped.length}`,
+        ]
+      : []),
     `Parent ${child.parentId}${child.parentGeneration ? ` #${child.parentGeneration}` : ""} · depth ${child.depth}`,
     ...(child.outcome
       ? [
@@ -181,9 +186,10 @@ export function taskDetails(
     `Effective builtin tools: ${child.tools.join(", ")}`,
     `${child.model.provider}/${child.model.id} · effort ${child.effort ?? "unavailable"}`,
     `Prewalk ${child.prewalk ? JSON.stringify(child.prewalk) : "off"} · advisor unavailable`,
+    ...(child.fallback ? [`Fallback ${JSON.stringify(child.fallback)}`] : []),
     `Presence ${presence ?? "historical"} · resources ${child.disposed ? "disposed" : child.status === "paused" ? "idle SDK; context retained; model resume required" : "live"}`,
     `Elapsed ${Math.max(0, Math.floor(((child.endedAt ?? Date.now()) - child.createdAt) / 1000))}s`,
-    `Direct requests ${metric(child.telemetry.requests)} · cost ${metric(child.telemetry.cost)}`,
+    `Direct requests ${metric(child.telemetry.requests)} · cost ${metric(child.telemetry.cost)}${child.telemetry.costIncomplete ? " (known subtotal; failed usage unknown)" : ""}`,
     `Direct tokens ${metric(child.telemetry.tokens)}`,
     `Context ${metric(child.telemetry.context)}`,
     `Parent ${child.parentId} #${child.parentGeneration ?? "root"} · depth ${child.depth} · direct generation only`,

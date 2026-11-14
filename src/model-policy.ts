@@ -11,6 +11,8 @@ export type ModelPolicy = Readonly<{
   models?: readonly ModelSelection[];
   model?: ModelSelection;
   prewalk?: ModelSelection;
+  /** Ordered routing policy, never a permission grant. */
+  fallback?: readonly ModelSelection[];
 }>;
 export function modelSelection(value: unknown): ModelSelection {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -51,11 +53,41 @@ export function narrowModelPolicy(
     )
       throw new Error("Cannot mint model grants");
   }
+  let fallback = base.fallback;
+  if (value.fallback !== undefined) {
+    if (value.fallback === false) fallback = undefined;
+    else {
+      if (!Array.isArray(value.fallback) || !value.fallback.length || value.fallback.length > 64)
+        throw new Error("fallback must be false or a finite nonempty exact selection array");
+      fallback = value.fallback.map(modelSelection);
+      if (
+        fallback.some((item, index) =>
+          fallback!.slice(0, index).some((prior) => sameSelection(prior, item)),
+        )
+      )
+        throw new Error("Duplicate fallback target");
+      if (!operator) {
+        let index = -1;
+        for (const target of fallback) {
+          const next =
+            base.fallback?.findIndex(
+              (item, position) => position > index && sameSelection(item, target),
+            ) ?? -1;
+          if (next < 0) throw new Error("Cannot add or reorder fallback targets");
+          index = next;
+        }
+      }
+    }
+  }
+  if (fallback?.some((item) => !models?.some((grant) => sameSelection(item, grant))))
+    throw new Error("Every fallback target requires an exact operator model grant");
   const policy: ModelPolicy = {
     models,
+    fallback,
     model: value.model === undefined ? base.model : modelSelection(value.model),
     prewalk: value.prewalk === undefined ? base.prewalk : modelSelection(value.prewalk),
   };
+  if (policy.fallback && policy.prewalk) throw new Error("fallback and prewalk cannot be combined");
   for (const selection of [policy.model, policy.prewalk])
     if (selection && !models?.some((item) => sameSelection(item, selection)))
       throw new Error("Model and prewalk selections require an exact operator model grant");

@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@howarewoo/pi-subagents)](https://www.npmjs.com/package/@howarewoo/pi-subagents)
 [![npm downloads](https://img.shields.io/npm/dm/@howarewoo/pi-subagents)](https://www.npmjs.com/package/@howarewoo/pi-subagents)
 
-Delegate code exploration, reviews and implementation tasks in the [Pi coding agent](https://pi.dev). Follow each subagent's conversation and tool use, then steer or stop tasks from [Subagent Hub](#subagent-hub). Subagents use your selected model by default, with their own assignments and explicit tool grants.
+Delegate code exploration, reviews and implementation tasks in the [Pi coding agent](https://pi.dev). Follow each subagent's conversation and tool use, then steer or stop tasks from [Subagent Hub](#subagent-hub). Subagents use your selected physical model by default, or an independently configured profile chain, with their own assignments and explicit tool grants.
 
 Use this extension to supervise delegated work inside a running Pi session. Keep the parent running until tasks finish; writers run concurrently by default, and you coordinate shared writes and any worktrees. See [why choose this repo](#why-choose-this-repo) and the [feature comparison](#feature-comparison) for the full trade-offs.
 
@@ -126,7 +126,7 @@ Pi discovers the native `subagent` tool at startup through its tool description 
 - `worker` maps to the configured `implementation` profile; `scout`, `review` and `general` are also available.
 - Calls are async by default and wake the parent after drain. Set `async:false` to wait; use `tasks:[{agent,task,cwd?}]` for a batch.
 - Control a task with its returned `id` and `action:"status"`, `"steer"`, `"stop"` or `"resume"`. Steer/resume also require `message`.
-- Resume continues a drained paused **or completed** conversation, preserving the same identity, generation, session count and full SDK conversation/tool history. Completed idle/parked agents restore their canonical session into a new SDK runtime using the same transcript, not a result summary. Missing restoration state, stopped/failed identities and retired descendants reject; there is no fresh-context fallback. Explicit `delegate_coordinate` followup/revive still start fresh work.
+- Resume continues a drained paused **or completed** conversation, preserving the same identity, generation, session count and full SDK conversation/tool history. Completed idle/parked agents restore their canonical session into a new SDK runtime using the same transcript, not a result summary. Missing restoration state, stopped identities, failed identities without an operator fallback reset, and retired descendants reject; there is no fresh-context fallback. Explicit `delegate_coordinate` followup/revive still start fresh work.
 
 The coordinator supplies an existing workspace and the complete handoff, including accessible skill/reference paths. The extension does not create or manage worktrees. This is the [supported orchestration interface](docs/delegation-contract.md#native-orchestration-compatibility), not compatibility with every competing workflow script or custom agent definition.
 
@@ -215,6 +215,30 @@ No configuration is needed for the bundled roles. To change prompts or narrow to
 ```
 
 All bundled profiles may delegate to `scout` and `review` by default, within a total depth of two (root 0, child 1, grandchild 2). Other nested targets and child messaging need explicit operator grants. Set `spawn: []` to revoke nesting. General inherits available parent skills; other roles need explicit skill grants. Trusted project configuration in `.pi/delegation.json` can narrow grants, never expand them. Children do not load ambient extension/MCP runtimes or context files; general can forward only the reviewed leaf tools described above.
+
+### Profile-owned model chains
+
+Configure `models` as permission grants and a separate ordered `fallback` array on a profile
+in `delegation.json`. The chain starts at its own first available authorized physical target,
+regardless of the parent's model, including when the parent selects a virtual model. It never
+executes or inherits that parent's router. Profiles without a chain keep existing routing.
+
+Each failed eligible request gets two same-model retries before advancing. Transient outages
+and exhausted quota/credits are eligible; authentication, permission, invalid requests,
+refusals, tool failures and cancellation are not. Backups remain selected across explicit
+resume until operator reset. Every attempt consumes the same cumulative request budget;
+backoff consumes the current deadline window.
+
+An explicit task `model` stays pinned unless `fallback:true` opts into that model's suffix of
+the profile chain. `fallback:false` disables chaining. Task `models` can remove destinations,
+not add or reorder them. Fallback and prewalk cannot be combined. Listing a provider in a
+chain authorizes sending that child's conversation to it; failed calls may still cost money.
+
+Inspect `/subagent-status <task-id> <generation>`. To reset an idle/paused retained child,
+use `/subagent-fallback-reset <task-id> <generation>`. Reset sends no request and replenishes
+no budgets or deadline. An exhausted failed child requires this operator action before
+explicit resume; model-facing tools cannot reset routing. No state survives parent shutdown.
+See [configuration, safety and diagnostics](docs/advanced-policies.md#profile-owned-fallback-chains).
 
 Default task limits are **30 minutes**, **200 direct model requests** and **500 tool calls**:
 
@@ -316,8 +340,8 @@ Choose this repo for a supervised workflow in an existing checkout:
   settings and tasks can only narrow operator grants. Ambient extension/MCP runtimes
   are not loaded, and extra leaf tools require operator review.
   See [permissions and resources](#why-permissions-and-resources-are-explicit).
-- Children use the parent's model and effort unless an exact operator-approved override
-  applies. Unavailable selections fail without fallback.
+- Children use the parent's physical model and effort unless an exact operator-approved override
+  or profile-owned fallback chain applies. Unchained unavailable selections fail without fallback.
   See [model routing](#why-model-routing-is-exact).
 - `resultSchema` requires explicit, validated submission. Batches pass preflight before
   any child starts, retain input order and report background outcomes after all siblings
@@ -421,9 +445,10 @@ See [permission and resource boundaries](ARCHITECTURE.md#permission-and-resource
 
 ### Why model routing is exact
 
-Children use the parent's selected model and effort by default. Overrides require exact
-operator-approved provider/model/effort grants. Unavailable selections and unsupported
-effort fail visibly; there is no automatic cheaper-model or provider fallback.
+Children use the parent's selected physical model and effort by default. Overrides require exact
+operator-approved provider/model/effort grants. Unchained unavailable selections and unsupported
+effort fail visibly. Optional [profile-owned fallback chains](docs/advanced-policies.md#profile-owned-fallback-chains)
+recover eligible failures only across explicitly listed exact targets; grants alone do not enable routing.
 Authentication stays with the parent's registry, not child task directories.
 
 A configured role prewalk can make one approved model switch after an edit/write call;

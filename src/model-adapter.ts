@@ -4,6 +4,7 @@ import {
   type Provider,
   type Model,
   type Api,
+  type ProviderHeaders,
 } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 
@@ -11,7 +12,7 @@ import { join } from "node:path";
 export async function parentModelRuntime(
   ctx: Pick<ExtensionContext, "model" | "modelRegistry" | "scopedModels">,
   agentDir: string,
-  onRequest: () => void = () => {},
+  onRequest: () => void | Promise<void> = () => {},
   additionalModels: Model<Api>[] = [],
 ): Promise<ModelRuntime> {
   const { model, modelRegistry: registry } = ctx;
@@ -42,10 +43,29 @@ export async function parentModelRuntime(
     refreshOnCreate: false,
     allowModelNetwork: false,
   });
+  registerParentModels(runtime, registry, [model, ...additionalModels], onRequest);
+  return runtime;
+}
+
+/** Add only newly available, independently authorized physical targets to the child runtime. */
+export function registerParentModels(
+  runtime: ModelRuntime,
+  registry: ExtensionContext["modelRegistry"],
+  models: readonly Model<Api>[],
+  onRequest: () => void | Promise<void>,
+): void {
   // Child runtime performs no independent auth discovery. Each request is forwarded to the
   // parent registry, which owns configured providers, OAuth refresh and request-time auth.
-  const models = [model, ...additionalModels];
-  for (const providerId of new Set(models.map((item) => item.provider))) {
+  const unique = [
+    ...new Map(models.map((model) => [`${model.provider}/${model.id}`, model])).values(),
+  ];
+  const dispatchGate = (signal?: AbortSignal) => async (headers: ProviderHeaders) => {
+    signal?.throwIfAborted();
+    await onRequest();
+    signal?.throwIfAborted();
+    return headers;
+  };
+  for (const providerId of new Set(unique.map((item) => item.provider))) {
     const provider: Provider = {
       id: providerId,
       name: `Parent selected ${providerId}`,
@@ -57,21 +77,20 @@ export async function parentModelRuntime(
           },
         },
       },
-      getModels: () => models.filter((item) => item.provider === providerId),
-      stream: (selected, context, options) => {
-        onRequest();
-        return registry.stream(registry.find(selected.provider, selected.id)!, context, options);
-      },
-      streamSimple: (selected, context, options) => {
-        onRequest();
-        return registry.streamSimple(
-          registry.find(selected.provider, selected.id)!,
-          context,
-          options,
-        );
-      },
+      getModels: () => unique.filter((item) => item.provider === providerId),
+      // This public registry transform runs after request-time authentication and just
+      // before physical provider dispatch. Rejected auth must not consume an attempt.
+      stream: (selected, context, options) =>
+        registry.stream(registry.find(selected.provider, selected.id)!, context, {
+          ...options,
+          transformHeaders: dispatchGate(options?.signal),
+        }),
+      streamSimple: (selected, context, options) =>
+        registry.streamSimple(registry.find(selected.provider, selected.id)!, context, {
+          ...options,
+          transformHeaders: dispatchGate(options?.signal),
+        }),
     };
     runtime.registerNativeProvider(provider);
   }
-  return runtime;
 }
