@@ -13,6 +13,7 @@ import { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { fixture, eventually } from "./fixtures.ts";
 import { resolveProfile } from "../src/profiles.ts";
 import { narrowModelPolicy } from "../src/model-policy.ts";
+import { recoverableFallback, terminalFallbackError } from "../src/model-fallback.ts";
 
 const a = { provider: "fallback-a", id: "a", effort: "high" as const };
 const b = { provider: "fallback-b", id: "b", effort: "low" as const };
@@ -220,6 +221,53 @@ test("exhaustion never wraps; operator reset retains failed-window evidence and 
   assert.equal(state.completedWindows?.[0].status, "failed");
   assert.equal(state.telemetry.requests, 4);
   assert.equal(state.fallback?.attempts.length, 4);
+});
+
+for (const error of [
+  "400 billing limit exhausted",
+  '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}',
+  '400 {"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API spend limit for this workspace."}}',
+]) {
+  test(`billing exhaustion retries twice then advances to the authorized backup: ${error}`, async (t) => {
+    const { root, runtime, direct, coordinator } = await fixture(t);
+    const { primary, backup } = providers(runtime);
+    primary.setResponses(
+      Array.from({ length: 3 }, () =>
+        fauxAssistantMessage("billing exhausted", { stopReason: "error", errorMessage: error }),
+      ),
+    );
+    backup.setResponses([fauxAssistantMessage("recovered on backup")]);
+    await configure(root, { tools: ["read"], models: [a, b], fallback: [a, b] });
+    const state = await coordinator.wait(await direct("recover billing exhaustion"));
+    assert.equal(state.status, "settled", state.error ?? "no error");
+    assert.equal(state.model.provider, b.provider);
+    assert.equal(primary.state.callCount, 3);
+    assert.equal(backup.state.callCount, 1);
+    assert.equal(state.telemetry.requests, 4);
+    assert.deepEqual(
+      state.fallback?.attempts.map((attempt) => attempt.error),
+      [error, error, error, undefined],
+    );
+  });
+}
+
+test("request validation and authorization remain terminal despite retryable wording", () => {
+  for (const error of [
+    '400 {"error":{"type":"invalid_request_error","message":"max_tokens must be positive"}}',
+    '400 {"error":{"type":"invalid_request_error","message":"network error: invalid model"}}',
+    "401 unauthorized: billing limit exhausted",
+    "403: credit balance is too low",
+    "invalid_request_error: invalid API key; insufficient_quota",
+  ]) {
+    assert.equal(terminalFallbackError(error), true, error);
+    assert.equal(
+      recoverableFallback(
+        fauxAssistantMessage("failed", { stopReason: "error", errorMessage: error }),
+      ),
+      false,
+      error,
+    );
+  }
 });
 
 test("terminal authentication errors do not recover even when transient wording is present", async (t) => {

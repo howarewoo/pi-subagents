@@ -107,19 +107,24 @@ export function initialFallback(ctx: Context, chain: readonly ModelSelection[]):
   return state;
 }
 
-/** Authentication/permission/invalid requests are never reclassified as outages. */
-export function terminalFallbackError(error: string): boolean {
-  return /\b(?:400|401|403)\b|api.?key|credential|not configured|authenticat|unauthorized|permission|invalid.request|refusal|cancel/i.test(
+function exhaustedFallbackBudget(error: string): boolean {
+  return /insufficient[_ ](?:quota|credits?)|quota.*(?:exceed|exhaust)|out of (?:budget|credits)|credits?.*(?:exhaust|deplet)|(?:exhaust|deplet).*credits?|credit balance.*too low|spend.?limit.*(?:reach|exceed|exhaust)|(?:reach|exceed|exhaust).*spend.?limit|billing.*(?:limit|exhaust|quota)|usage.?limit|available balance|GoUsageLimitError|FreeUsageLimitError/i.test(
     error,
+  );
+}
+
+/** Billing exhaustion may be an invalid request, but never overrides authorization failures. */
+export function terminalFallbackError(error: string): boolean {
+  return (
+    /\b(?:401|403)\b|api.?key|credential|not configured|authenticat|unauthorized|permission|refusal|cancel/i.test(
+      error,
+    ) ||
+    (/\b400\b|invalid.request/i.test(error) && !exhaustedFallbackBudget(error))
   );
 }
 
 export function recoverableFallback(message: AssistantMessage): boolean {
   if (message.stopReason !== "error" || terminalFallbackError(message.errorMessage ?? ""))
     return false;
-  return (
-    /insufficient[_ ](?:quota|credits?)|quota.*(?:exceed|exhaust)|out of (?:budget|credits)|credits?.*(?:exhaust|deplet)|(?:exhaust|deplet).*credits?|billing.*(?:limit|exhaust|quota)|usage.?limit|available balance|GoUsageLimitError|FreeUsageLimitError/i.test(
-      message.errorMessage ?? "",
-    ) || isRetryableAssistantError(message)
-  );
+  return exhaustedFallbackBudget(message.errorMessage ?? "") || isRetryableAssistantError(message);
 }
