@@ -6,7 +6,7 @@ This is a capability ledger for operators and integrators, not a full-parity or 
 
 Unchained tasks use the captured physical parent model, effort and public authentication adapter. No automatic cheap model, alias or catalog refresh is introduced. Generic virtual-parent inheritance remains unsupported; independently selected physical profile/task models and profile chains do not need the parent router.
 
-Only operator `<agent-dir>/delegation.json` can grant exact alternative selections, per bundled role:
+Only operator `<agent-dir>/delegation.json` can grant exact alternative selections, per role (bundled or globally defined custom):
 
 ```json
 {
