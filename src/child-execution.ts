@@ -1,3 +1,11 @@
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  FALLBACK_RETRIES,
+  availableFallback,
+  terminalFallbackError,
+  recoverableFallback,
+} from "./model-fallback.ts";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -17,7 +25,7 @@ import {
 import type { Validator } from "@earendil-works/pi-schema";
 import { submissionParameters, saveOutcomeArtifact } from "./outcomes.ts";
 import { validateModelSelection, type ModelSelection } from "./model-policy.ts";
-import { parentModelRuntime } from "./model-adapter.ts";
+import { parentModelRuntime, registerParentModels } from "./model-adapter.ts";
 import { workspaceArguments } from "./workspace.ts";
 import type { BuiltinTool } from "./profiles.ts";
 import type { ChildSnapshot, StartTask } from "./delegation-types.ts";
@@ -26,7 +34,7 @@ import type { ChildSnapshot, StartTask } from "./delegation-types.ts";
 export type ExecutionRecord = {
   validator?: Validator;
   input: StartTask;
-  selection: Pick<
+  selection: { fallback?: ChildSnapshot["fallback"] } & Pick<
     ExtensionToolContext,
     "model" | "modelRegistry" | "scopedModels" | "thinkingLevel" | "cwd"
   >;
@@ -43,12 +51,15 @@ export type ExecutionRecord = {
   resumeText?: string;
   prompted?: boolean;
   cancelled: boolean;
+  recoveryAbort?: AbortController;
+  prepareModel?: (selected: ModelSelection) => void;
 };
 
 /** Operations bound to the exact admitted entry, never a later generation with its ID. */
 export interface ExecutionOwner {
   readonly closing: boolean;
   update(patch: Partial<ChildSnapshot>, event?: AgentSessionEvent): void;
+  revalidateFallback(): Promise<void>;
   revalidateModel(selected: ModelSelection, requirePrewalk: boolean): Promise<void>;
   authorizeTool(name: string, builtin: boolean): Promise<void>;
   assertTool(name: string, builtin: boolean, signal?: AbortSignal): void;
@@ -107,21 +118,94 @@ export async function createChildExecution(
         : undefined;
     let policyError: string | undefined;
     let completedMutation = false;
+    let pendingAttempt: number | undefined;
+    let recoveryPrepared = false;
+    entry.recoveryAbort = new AbortController();
+    const settings = SettingsManager.inMemory({
+      compaction: { enabled: false },
+      retry: {
+        enabled: !!entry.state.fallback,
+        maxRetries: FALLBACK_RETRIES,
+        provider: { maxRetries: 0 },
+      },
+    });
+    const waitForRetry = async (failures: number) => {
+      await delay(Math.min(60000, 2000 * 2 ** Math.max(0, failures - 1)), undefined, {
+        signal: entry.recoveryAbort!.signal,
+      });
+      // Native retries retain ownership of the remaining allowance after a quota
+      // continuation, including a subsequent transient failure in that same episode.
+      settings.applyOverrides({ retry: { maxRetries: Math.max(0, FALLBACK_RETRIES - failures) } });
+    };
+    const stopped = () =>
+      entry.cancelled || entry.paused || owner.closing || entry.recoveryAbort!.signal.aborted;
+    const selectFallback = async (start: number) => {
+      await owner.revalidateFallback();
+      if (stopped()) throw new Error("Delegation cancelled");
+      const priorIndex = entry.state.fallback!.index;
+      const fallback = availableFallback(input.context, entry.state.fallback!, start);
+      owner.update({ fallback });
+      if (fallback.exhausted) return;
+      if (fallback.index !== priorIndex)
+        settings.applyOverrides({
+          retry: { maxRetries: entry.session!.retryAttempt + FALLBACK_RETRIES },
+        });
+      const next = fallback.chain[fallback.index];
+      await owner.revalidateModel(next, false);
+      if (stopped()) throw new Error("Delegation cancelled");
+      const model = validateModelSelection(input.context, next);
+      entry.prepareModel?.(next);
+      if (entry.session!.model !== model) await entry.session!.setModel(model);
+      if (stopped()) throw new Error("Delegation cancelled");
+      if (entry.session!.thinkingLevel !== next.effort)
+        entry.session!.setThinkingLevel(next.effort);
+      if (entry.session!.thinkingLevel !== next.effort)
+        throw new Error("SDK coerced fallback effort");
+      selection.model = model;
+      selection.thinkingLevel = next.effort;
+      owner.update({ model: { provider: next.provider, id: next.id }, effort: next.effort });
+    };
     const inheritCodemode = !!input.codemodeEnabled?.();
     if (!inheritCodemode) input.codemodeEnabled = () => false;
     const effective = (): ModelSelection => ({
       ...entry.state.model,
       effort: entry.state.effort as ModelSelection["effort"],
     });
-    const runtime = await parentModelRuntime(
-      selection,
-      agentDir,
-      () => {
-        if (policyError) throw new Error(policyError);
-        owner.chargeRequest();
-      },
-      target ? [target] : [],
-    );
+    const onRequest = async () => {
+      if (policyError) throw new Error(policyError);
+      if (entry.state.fallback) await owner.revalidateFallback();
+      await owner.revalidateModel(effective(), entry.state.prewalk?.status === "armed");
+      owner.chargeRequest();
+      if (entry.state.fallback) {
+        pendingAttempt = entry.state.fallback.attempts.length;
+        owner.update({
+          fallback: {
+            ...entry.state.fallback,
+            attempts: [
+              ...entry.state.fallback.attempts,
+              { target: effective(), usageKnown: false },
+            ],
+          },
+        });
+      }
+    };
+    const physicalTargets = () => [
+      selection.model!,
+      ...(target ? [target] : []),
+      ...(entry.state.fallback?.chain.flatMap((item) => {
+        const model = input.context.modelRegistry.find(item.provider, item.id);
+        return model && model.api !== "pi-virtual" ? [model] : [];
+      }) ?? []),
+    ];
+    const admittedModels = physicalTargets();
+    const routed = new Set(admittedModels.map((model) => `${model.provider}/${model.id}`));
+    const runtime = await parentModelRuntime(selection, agentDir, onRequest, admittedModels);
+    entry.prepareModel = (next) => {
+      if (routed.has(`${next.provider}/${next.id}`)) return;
+      const models = [...physicalTargets(), validateModelSelection(input.context, next)];
+      registerParentModels(runtime, input.context.modelRegistry, models, onRequest);
+      for (const model of models) routed.add(`${model.provider}/${model.id}`);
+    };
     const resources = childResources(
       (entry.resourcePrompt ??=
         input.profile.prompt +
@@ -137,7 +221,7 @@ export async function createChildExecution(
     const loader = new DefaultResourceLoader({
       cwd: selection.cwd,
       agentDir,
-      settingsManager: SettingsManager.inMemory(),
+      settingsManager: settings,
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -157,13 +241,168 @@ export async function createChildExecution(
           });
           pi.on("turn_start", async () => {
             try {
+              if (entry.state.fallback) {
+                const prior = entry
+                  .session!.sessionManager.getBranch()
+                  .findLast((item) => item.type === "message" && item.message.role === "assistant");
+                const eligible =
+                  prior?.type === "message" &&
+                  prior.message.role === "assistant" &&
+                  recoverableFallback(prior.message);
+                const prepared = recoveryPrepared;
+                recoveryPrepared = false;
+                if (
+                  !prepared &&
+                  prior?.type === "message" &&
+                  prior.message.role === "assistant" &&
+                  prior.message.stopReason === "error" &&
+                  !eligible
+                )
+                  throw new Error("Terminal child model failure; explicit operator reset required");
+                if (eligible && entry.state.fallback.failures > FALLBACK_RETRIES) {
+                  // Steering/follow-up work can start before the final settle boundary.
+                  // It must not obtain a fourth physical attempt on the exhausted target.
+                  await selectFallback(entry.state.fallback.index + 1);
+                } else {
+                  if (
+                    !prepared &&
+                    eligible &&
+                    prior.message.role === "assistant" &&
+                    !isRetryableAssistantError(prior.message)
+                  ) {
+                    await waitForRetry(entry.state.fallback.failures);
+                  }
+                  await selectFallback(entry.state.fallback.index);
+                }
+                if (entry.state.fallback.exhausted)
+                  throw new Error("Fallback exhausted; operator reset required");
+                // Pi otherwise replaces unsupported images with placeholders. Never silently
+                // alter the request to fit a backup's capabilities.
+                const images = entry
+                  .session!.sessionManager.buildSessionProjection()
+                  .messages.some(
+                    (message) =>
+                      "content" in message &&
+                      Array.isArray(message.content) &&
+                      message.content.some((block) => block.type === "image"),
+                  );
+                while (images && !selection.model!.input.includes("image")) {
+                  const fallback = entry.state.fallback!;
+                  owner.update({
+                    fallback: {
+                      ...fallback,
+                      skipped: [
+                        ...fallback.skipped,
+                        {
+                          target: fallback.chain[fallback.index],
+                          reason: "request requires image support",
+                        },
+                      ],
+                    },
+                  });
+                  await selectFallback(fallback.index + 1);
+                  if (entry.state.fallback!.exhausted)
+                    throw new Error(
+                      "No fallback target accepts request capabilities; operator reset required",
+                    );
+                }
+              }
               await owner.revalidateModel(effective(), entry.state.prewalk?.status === "armed");
               policyError = undefined;
             } catch (error) {
               policyError = String(error);
             }
           });
+          pi.on("message_end", (event) => {
+            const fallback = entry.state.fallback;
+            if (!fallback || pendingAttempt === undefined || event.message.role !== "assistant")
+              return;
+            const message = event.message;
+            const attempts = [...fallback.attempts];
+            const last = attempts[pendingAttempt];
+            if (last)
+              attempts[pendingAttempt] = {
+                ...last,
+                error: message.stopReason === "error" ? message.errorMessage : undefined,
+                usageKnown:
+                  (message.stopReason !== "error" && message.stopReason !== "aborted") ||
+                  message.usage.totalTokens > 0,
+              };
+            pendingAttempt = undefined;
+            const failures =
+              message.stopReason === "error"
+                ? fallback.failures + 1
+                : message.stopReason === "aborted"
+                  ? fallback.failures
+                  : 0;
+            if (message.stopReason === "error" && terminalFallbackError(message.errorMessage ?? ""))
+              settings.applyOverrides({ retry: { maxRetries: 0 } });
+            owner.update({ fallback: { ...fallback, failures, attempts } });
+            if (message.stopReason !== "error")
+              settings.applyOverrides({ retry: { maxRetries: FALLBACK_RETRIES } });
+          });
+          pi.on("agent_before_settle", async (event, ctx) => {
+            const fallback = entry.state.fallback;
+            if (!fallback || fallback.exhausted || policyError || stopped()) return;
+            const failed = ctx.sessionManager
+              .getBranch()
+              .findLast((item) => item.type === "message" && item.message.role === "assistant");
+            if (
+              failed?.type !== "message" ||
+              failed.message.role !== "assistant" ||
+              failed.message.stopReason !== "error"
+            )
+              return;
+            const message = failed.message;
+            if (!recoverableFallback(message)) return;
+            try {
+              await owner.revalidateFallback();
+              if (stopped()) return;
+              if (fallback.failures > FALLBACK_RETRIES) {
+                await selectFallback(fallback.index + 1);
+                settings.applyOverrides({ retry: { maxRetries: FALLBACK_RETRIES } });
+              } else {
+                await waitForRetry(fallback.failures);
+              }
+              if (stopped() || entry.state.fallback!.exhausted) return;
+              recoveryPrepared = true;
+              return {
+                entries: [
+                  ...event.entries,
+                  { type: "context_edit", targetId: failed.id, replacement: null },
+                  {
+                    type: "custom",
+                    customType: "subagent-fallback-recovery",
+                    data: entry.state.fallback,
+                  },
+                ],
+                continue: true,
+              };
+            } catch (error) {
+              if (stopped())
+                return {
+                  entries: [
+                    ...event.entries,
+                    { type: "context_edit", targetId: failed.id, replacement: null },
+                  ],
+                  continue: false,
+                };
+              policyError = String(error);
+              owner.update({ error: policyError });
+            }
+          });
           pi.on("turn_end", async (event) => {
+            if (
+              entry.state.fallback &&
+              event.message.role === "assistant" &&
+              recoverableFallback(event.message)
+            )
+              return {
+                entries: [
+                  ...event.entries,
+                  { type: "context_edit", targetId: event.messageEntryId, replacement: null },
+                ],
+              };
             if (
               !entry.cancelled &&
               !entry.paused &&
@@ -316,14 +555,15 @@ export async function createChildExecution(
       scopedModels: [
         { model: selection.model!, thinkingLevel: selection.thinkingLevel },
         ...(target ? [{ model: target, thinkingLevel: input.profile.prewalk!.effort }] : []),
+        ...(entry.state.fallback?.chain.flatMap((item) => {
+          const model = input.context.modelRegistry.find(item.provider, item.id);
+          return model && model.api !== "pi-virtual" ? [{ model, thinkingLevel: item.effort }] : [];
+        }) ?? []),
       ],
       resourceLoader: resources,
       tools: [...tools.map((tool) => tool.name), ...(inheritCodemode ? ["codemode"] : [])],
       customTools: tools,
-      settingsManager: SettingsManager.inMemory({
-        compaction: { enabled: false },
-        retry: { enabled: false },
-      }),
+      settingsManager: settings,
       sessionManager: entry.sessionManager ?? SessionManager.create(selection.cwd, transcriptDir),
     });
     entry.session = session;
@@ -364,6 +604,13 @@ export async function createChildExecution(
           ...entry.state.telemetry,
           tokens: stats.tokens,
           cost: stats.cost,
+          ...(entry.state.fallback
+            ? {
+                costIncomplete: entry.state.fallback.attempts.some(
+                  (attempt) => !attempt.usageKnown,
+                ),
+              }
+            : {}),
           context: session.getContextUsage() ?? null,
         };
       }
@@ -376,6 +623,12 @@ export async function createChildExecution(
       return;
     }
     entry.prompt = (text) => {
+      recoveryPrepared = true; // Explicit windows do not restart an interrupted automatic delay.
+      if (entry.recoveryAbort?.signal.aborted) entry.recoveryAbort = new AbortController();
+      if (entry.state.fallback)
+        settings.applyOverrides({
+          retry: { maxRetries: Math.max(0, FALLBACK_RETRIES - entry.state.fallback.failures) },
+        });
       if (!entry.prompted) {
         text = entry.resumeText ? input.assignment + "\n\n" + entry.resumeText : input.assignment;
         entry.prompted = true;
@@ -428,7 +681,9 @@ export async function createChildExecution(
             error: entry.state.limitReason
               ? entry.state.error
               : failed
-                ? (last?.errorMessage ?? "No final assistant outcome")
+                ? entry.state.fallback?.exhausted
+                  ? `${last?.errorMessage ?? "Provider failure"}; fallback exhausted; operator reset required`
+                  : (policyError ?? last?.errorMessage ?? "No final assistant outcome")
                 : missing
                   ? "Required structured result was not submitted successfully"
                   : artifacts.error,
@@ -437,6 +692,13 @@ export async function createChildExecution(
               requests: entry.state.telemetry.requests,
               tokens: stats.assistantMessages ? stats.tokens : null,
               cost: stats.assistantMessages ? stats.cost : null,
+              ...(entry.state.fallback
+                ? {
+                    costIncomplete: entry.state.fallback.attempts.some(
+                      (attempt) => !attempt.usageKnown,
+                    ),
+                  }
+                : {}),
               context: session.getContextUsage() ?? null,
             },
           });

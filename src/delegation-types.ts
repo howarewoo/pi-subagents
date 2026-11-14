@@ -72,6 +72,14 @@ export type ChildSnapshot = Readonly<
     result: string;
     model: { provider: string; id: string };
     effort: string | null;
+    fallback?: {
+      chain: readonly ModelSelection[];
+      index: number;
+      failures: number;
+      exhausted: boolean;
+      skipped: readonly { target: ModelSelection; reason: string }[];
+      attempts: readonly { target: ModelSelection; error?: string; usageKnown: boolean }[];
+    };
     prewalk?: {
       target: ModelSelection;
       status: "armed" | "handed-off" | "suppressed-exact" | "no-op";
@@ -80,6 +88,8 @@ export type ChildSnapshot = Readonly<
       requests: number | null;
       tokens: ReturnType<AgentSession["getSessionStats"]>["tokens"] | null;
       cost: number | null;
+      /** Cost is the known subtotal when failed-attempt usage is unavailable. */
+      costIncomplete?: boolean;
       context: ReturnType<AgentSession["getContextUsage"]> | null;
     };
     outcome?: StructuredOutcome;
@@ -99,6 +109,7 @@ export type RegistryEvent = Readonly<{
 export type StartTask = {
   cwd?: string;
   model?: ModelSelection;
+  fallback?: boolean;
   resultSchema?: unknown;
   assignment: string;
   profile: Profile;

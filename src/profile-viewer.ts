@@ -47,6 +47,7 @@ function details(profile: Profile): DetailLine[] {
     "models",
     "model",
     "prewalk",
+    "fallback",
   ]);
   const heading = (text: string): DetailLine => ({ text, heading: true });
   const value = (text: string): DetailLine => ({ text });
@@ -92,9 +93,15 @@ function details(profile: Profile): DetailLine[] {
     ...(profile.skills.length ? profile.skills.map(value) : [value("none")]),
     value(""),
     heading("Model policy"),
-    ...structured("Model default", profile.model ?? "selected parent model"),
+    ...structured(
+      profile.fallback ? "Model default (unchained)" : "Model default",
+      profile.model ?? "selected parent model",
+    ),
     ...structured("Models grant", profile.models ?? "no explicit override grant"),
     ...structured("Prewalk", profile.prewalk ?? "off"),
+    ...(profile.fallback
+      ? structured("Fallback chain (routing, not grants)", profile.fallback)
+      : []),
     ...Object.entries(profile)
       .filter(([key]) => !known.has(key))
       .map(([key, item]) => value(`${key}: ${JSON.stringify(item)}`)),

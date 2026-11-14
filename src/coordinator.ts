@@ -1,3 +1,9 @@
+import {
+  taskFallback,
+  initialFallback,
+  authorizeFallback,
+  availableFallback,
+} from "./model-fallback.ts";
 import { requireSupportedHost } from "./supported-host.ts";
 import { leafDenial, toolProvenance, type CapabilityDenial } from "./capabilities.ts";
 import { randomUUID } from "node:crypto";
@@ -66,6 +72,8 @@ type Entry = ExecutionRecord & {
   resuming?: boolean;
   pauseDrain?: Promise<void>;
   callerId: string;
+  fallbackReset?: boolean;
+  resettingFallback?: boolean;
 };
 
 function broadenedGrant(profile: Profile, grant: Profile) {
@@ -176,7 +184,7 @@ export class DelegationCoordinator {
   private validate(input: StartTask): ExecutionRecord["selection"] {
     if (this.closing) throw new Error("Parent shut down");
     if (!input.assignment.trim()) throw new Error("A nonempty assignment is required");
-    const selection = {
+    const selection: ExecutionRecord["selection"] = {
       model: input.context.model,
       modelRegistry: input.context.modelRegistry,
       scopedModels: input.context.scopedModels,
@@ -184,7 +192,11 @@ export class DelegationCoordinator {
       cwd: input.cwd ?? input.context.cwd,
     };
     if (!selection.model) throw new Error("A selected parent model is required");
-    const requested = input.model ?? input.profile.model;
+    const chain = taskFallback(input);
+    if (chain) selection.fallback = initialFallback(selection, chain);
+    const requested = selection.fallback
+      ? selection.fallback.chain[selection.fallback.index]
+      : (input.model ?? input.profile.model);
     const parentState = input.parent ? this.entry(input.parent).state : undefined;
     const effective: ModelSelection = requested ?? {
       ...(parentState?.model ?? { provider: selection.model.provider, id: selection.model.id }),
@@ -505,6 +517,7 @@ export class DelegationCoordinator {
           disposed: false,
           model: { provider: selection.model!.provider, id: selection.model!.id },
           effort: selection.thinkingLevel ?? null,
+          fallback: selection.fallback,
           prewalk: input.profile.prewalk
             ? {
                 target: input.profile.prewalk,
@@ -564,6 +577,7 @@ export class DelegationCoordinator {
   async renew(ref: ChildRef, input: StartTask, signal?: AbortSignal): Promise<ChildRef> {
     requireSupportedHost();
     const previous = this.entry(ref);
+    if (previous.resettingFallback) throw new Error("Fallback reset is in progress");
     this.renewalParent(ref);
     const profile = intersectProfileGrants(input.profile, previous.input.profile);
     const retained =
@@ -576,6 +590,7 @@ export class DelegationCoordinator {
           {
             ...input,
             model: retained ?? input.model,
+            fallback: previous.input.fallback ?? input.fallback,
             profile,
             skills: input.skills.filter((skill) => profile.skills.includes(skill.filePath)),
             resultSchema:
@@ -629,6 +644,7 @@ export class DelegationCoordinator {
     collect(root);
     for (const entry of entries) {
       entry.paused = true;
+      entry.recoveryAbort?.abort();
       this.presence.set(entry.state.id, "pausing");
       clearTimeout(entry.timer);
       this.queue.delete(entry);
@@ -675,14 +691,122 @@ export class DelegationCoordinator {
     const paused = Promise.all(entries.map(complete)).then(() => {});
     return paused;
   }
+  /** Root operator command only: no requests, budget replenishment, or deadline renewal. */
+  async resetFallback(ref: ChildRef): Promise<void> {
+    const entry = this.entry(ref);
+    if (
+      !entry.state.fallback ||
+      !entry.sessionManager ||
+      entry.resuming ||
+      entry.resettingFallback ||
+      entry.cancelled ||
+      this.closing ||
+      !(
+        entry.state.status === "paused" ||
+        (entry.state.disposed && ["settled", "failed"].includes(entry.state.status))
+      )
+    )
+      throw new Error("Fallback reset requires an idle retained child");
+    const assertResettable = () => {
+      if (
+        this.entries.get(ref.id) !== entry ||
+        entry.cancelled ||
+        this.closing ||
+        entry.resuming ||
+        this.presence.get(ref.id) === "stopped"
+      )
+        throw new Error("Fallback reset cancelled by stop, shutdown or identity replacement");
+    };
+    entry.resettingFallback = true;
+    try {
+      const { profile } = await resolveProfile(
+        entry.input.profile.name,
+        entry.input.context.cwd,
+        entry.input.context.isProjectTrusted(),
+        undefined,
+        entry.input.availableSkills?.() ?? entry.input.skills,
+      );
+      assertResettable();
+      const narrowed = intersectProfileGrants(profile, entry.input.profile);
+      const chain = taskFallback({ ...entry.input, profile: narrowed });
+      if (!chain) throw new Error("Fallback policy is no longer enabled");
+      let current: Entry | undefined = entry;
+      while (current) {
+        const live = (
+          await resolveProfile(
+            current.input.profile.name,
+            entry.input.context.cwd,
+            entry.input.context.isProjectTrusted(),
+            undefined,
+            current.input.availableSkills?.() ?? current.input.skills,
+          )
+        ).profile;
+        assertResettable();
+        for (const target of chain)
+          if (!admittedModel(current, target) || !allowsModel(live, target))
+            throw new Error("Fallback reset cannot broaden admitted model grants");
+        current = current.input.parent ? this.entry(current.input.parent) : undefined;
+      }
+      const fallback = {
+        ...initialFallback(entry.input.context, chain),
+        attempts: entry.state.fallback.attempts,
+      };
+      const selected = fallback.chain[fallback.index];
+      const model = validateModelSelection(entry.input.context, selected);
+      const auth = await entry.input.context.modelRegistry.getApiKeyAndHeaders(model);
+      assertResettable();
+      if (!auth.ok) throw new Error(auth.error);
+      const session = entry.session;
+      if (session) {
+        entry.prepareModel?.(selected);
+        await session.setModel(model);
+        assertResettable();
+        session.setThinkingLevel(selected.effort);
+        if (session.thinkingLevel !== selected.effort) throw new Error("SDK coerced reset effort");
+      } else {
+        entry.sessionManager.appendModelChange(selected.provider, selected.id);
+        entry.sessionManager.appendThinkingLevelChange(selected.effort);
+      }
+      entry.input.profile = { ...entry.input.profile, fallback: narrowed.fallback };
+      entry.selection.model = model;
+      entry.selection.thinkingLevel = selected.effort;
+      entry.fallbackReset = true;
+      const failed = entry.sessionManager
+        .getBranch()
+        .findLast((item) => item.type === "message" && item.message.role === "assistant");
+      if (
+        failed?.type === "message" &&
+        failed.message.role === "assistant" &&
+        failed.message.stopReason === "error"
+      )
+        entry.sessionManager.appendContextEdit(failed.id, null);
+      entry.sessionManager.appendCustomEntry("subagent-fallback-reset", fallback);
+      if (entry.state.disposed)
+        entry.finalizedMessages = structuredClone(
+          entry.sessionManager.buildSessionContext().messages,
+        );
+      this.update(entry, {
+        fallback,
+        model: { provider: selected.provider, id: selected.id },
+        effort: selected.effort,
+        retainedContext: true,
+      });
+    } finally {
+      entry.resettingFallback = false;
+    }
+  }
   /** Continue a drained window without replacing the identity or SDK conversation. */
   async resume(ref: ChildRef, text: string): Promise<ChildRef> {
     requireSupportedHost();
     const entry = this.entry(ref);
-    const completed = entry.state.status === "settled" && entry.state.disposed;
+    const completed =
+      (entry.state.status === "settled" ||
+        (entry.fallbackReset && entry.state.status === "failed")) &&
+      entry.state.disposed;
     const eligible = entry.state.status === "paused" || completed;
     if (
       entry.resuming ||
+      entry.resettingFallback ||
       !eligible ||
       entry.cancelled ||
       this.closing ||
@@ -700,7 +824,12 @@ export class DelegationCoordinator {
         entry.cancelled ||
         this.closing ||
         this.presence.get(ref.id) === "stopped" ||
-        (completed ? entry.state.status !== "settled" : entry.state.status !== "paused")
+        (completed
+          ? !(
+              entry.state.status === "settled" ||
+              (entry.fallbackReset && entry.state.status === "failed")
+            )
+          : entry.state.status !== "paused")
       )
         throw new Error("Resume cancelled by stop, shutdown or identity replacement");
       this.renewalParent(ref);
@@ -754,10 +883,19 @@ export class DelegationCoordinator {
         );
       let current: Entry | undefined = entry;
       let descendant: Entry | undefined;
-      const selected: ModelSelection = {
-        ...entry.state.model,
-        effort: entry.state.effort as ModelSelection["effort"],
-      };
+      let fallback = entry.state.fallback;
+      if (fallback) {
+        await this.revalidateExecutionFallback(entry);
+        assertResumable();
+        fallback = availableFallback(input.context, fallback, fallback.index);
+        if (fallback.exhausted) throw new Error("Fallback exhausted; operator reset required");
+      }
+      const selected: ModelSelection = fallback
+        ? fallback.chain[fallback.index]
+        : {
+            ...entry.state.model,
+            effort: entry.state.effort as ModelSelection["effort"],
+          };
       while (current) {
         const { profile } = await resolveProfile(
           current.input.profile.name,
@@ -864,11 +1002,22 @@ export class DelegationCoordinator {
         entry.selection.model = validateModelSelection(input.context, selected);
         entry.selection.thinkingLevel = selected.effort;
       }
+      if (fallback) {
+        entry.state = {
+          ...entry.state,
+          fallback,
+          model: { provider: selected.provider, id: selected.id },
+          effort: selected.effort,
+        };
+        entry.selection.model = validateModelSelection(input.context, selected);
+        entry.selection.thinkingLevel = selected.effort;
+      }
       this.policy = policy;
       entry.done = new Promise<void>((resolve) => {
         entry.finish = resolve;
       });
       entry.paused = false;
+      entry.fallbackReset = false;
       this.presence.set(entry.state.id, "active");
       entry.pauseDrain = undefined;
       entry.resumeText =
@@ -914,6 +1063,31 @@ export class DelegationCoordinator {
       throw new Error("Tool call limit");
     }
     this.update(entry, { toolCalls: entry.state.toolCalls + 1 });
+  }
+  private async revalidateExecutionFallback(entry: Entry): Promise<void> {
+    const state = entry.state.fallback;
+    if (!state) return;
+    if (state.exhausted) throw new Error("Fallback exhausted; operator reset required");
+    authorizeFallback(entry.input.context, state.chain);
+    let current: Entry | undefined = entry;
+    while (current) {
+      const { profile } = await resolveProfile(
+        current.input.profile.name,
+        entry.input.context.cwd,
+        entry.input.context.isProjectTrusted(),
+        undefined,
+        current.input.availableSkills?.() ?? current.input.skills,
+      );
+      if (
+        current === entry &&
+        JSON.stringify(profile.fallback) !== JSON.stringify(entry.input.profile.fallback)
+      )
+        throw new Error("Fallback configuration changed; operator reset required");
+      for (const target of state.chain)
+        if (!admittedModel(current, target) || !allowsModel(profile, target))
+          throw new Error("Fallback model authorization revoked");
+      current = current.input.parent ? this.entry(current.input.parent) : undefined;
+    }
   }
   private async revalidateExecutionModel(
     entry: Entry,
@@ -1010,6 +1184,7 @@ export class DelegationCoordinator {
         return isClosing();
       },
       update: (patch, event) => this.update(entry, patch, event),
+      revalidateFallback: () => this.revalidateExecutionFallback(entry),
       revalidateModel: (selected, requirePrewalk) =>
         this.revalidateExecutionModel(entry, selected, requirePrewalk),
       authorizeTool: (name, builtin) =>
@@ -1047,11 +1222,13 @@ export class DelegationCoordinator {
     this.queue.delete(entry);
     clearTimeout(entry.timer);
     if (entry.session) entry.finalizedMessages = structuredClone(entry.session.messages);
+    entry.recoveryAbort?.abort();
     entry.unsubscribe?.();
     entry.session?.dispose();
     // Retain the authoritative SessionManager and immutable evidence, not the SDK runtime graph.
     entry.unsubscribe = undefined;
     entry.session = undefined;
+    entry.prepareModel = undefined;
     entry.prompt = undefined;
     entry.resumeText = undefined;
     entry.setup = undefined;
@@ -1064,7 +1241,10 @@ export class DelegationCoordinator {
     this.presence.set(entry.state.id, entry.cancelled || this.closing ? "stopped" : "idle");
     this.update(entry, {
       disposed: true,
-      retainedContext: !!entry.sessionManager && entry.state.status === "settled",
+      retainedContext:
+        !!entry.sessionManager &&
+        (entry.state.status === "settled" ||
+          (!!entry.state.fallback && entry.state.status === "failed" && !entry.cancelled)),
       endedAt: Date.now(),
       writerLease: false,
       outcome: entry.state.outcome ? { ...entry.state.outcome, finalized: true } : undefined,
@@ -1377,6 +1557,7 @@ export class DelegationCoordinator {
     this.notifyCoordination();
     if (entry.state.disposed) return;
     entry.cancelled = true;
+    entry.recoveryAbort?.abort();
     if (entry.state.status === "queued") {
       this.update(entry, { status: "cancelled", activity: "Cancelled before setup" });
       this.dispose(entry);

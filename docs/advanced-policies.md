@@ -4,7 +4,7 @@ This is a capability ledger for operators and integrators, not a full-parity or 
 
 ## Exact model and reasoning policy — implemented
 
-Ordinary tasks still use the captured physical parent model, effort and public authentication adapter. No automatic cheap model, alias, fallback, catalog refresh or extra inference is introduced. Virtual selections remain unsupported.
+Unchained tasks use the captured physical parent model, effort and public authentication adapter. No automatic cheap model, alias or catalog refresh is introduced. Generic virtual-parent inheritance remains unsupported; independently selected physical profile/task models and profile chains do not need the parent router.
 
 Only operator `<agent-dir>/delegation.json` can grant exact alternative selections, per bundled role:
 
@@ -29,6 +29,90 @@ These identifiers are illustrative; use exact models already configured in the p
 - Default descendants inherit their immediate parent’s actual selection, not the root’s different model. Every descendant selection and armed prewalk target must fit ancestor admitted authority. An ancestor without alternative grants permits only its actual selection. Renewal intersects current and previously admitted/request-narrowed grants; explicit request selections remain pinned. Removed alternatives cannot be restored by renewal. Ordinary inherited defaults revalidate the current physical parent on renewal.
 - Whole-batch preflight checks every selection/armed target, provider, public availability, configured auth, parent scope and supported effort before inserting any identity or creating directories. Actual asynchronous auth resolution can still fail after admission and is reported as failure, not fallback. Each next turn rechecks current operator/project and ancestor policy; each dispatch rechecks live public registry/auth/scope/effort before counting and forwarding it. Revocation never authorizes an additional direct request.
 - Snapshots name the actual current physical model and effort, not an invented role alias. SDK transcripts record real selections/responses. Direct request/token/cost telemetry belongs to that generation once, including both prewalk phases; parent and descendants are not charged again in an aggregate here.
+
+## Profile-owned fallback chains
+
+For resilience, define both exact permission grants and a separate ordered chain in the
+operator's `<agent-dir>/delegation.json`. These identifiers are illustrative: replace them
+with exact physical models already configured and authenticated in the parent registry.
+
+```json
+{
+  "general": {
+    "models": [
+      { "provider": "your-primary-provider", "id": "primary-model", "effort": "high" },
+      { "provider": "your-backup-provider", "id": "backup-model", "effort": "medium" }
+    ],
+    "fallback": [
+      { "provider": "your-primary-provider", "id": "primary-model", "effort": "high" },
+      { "provider": "your-backup-provider", "id": "backup-model", "effort": "medium" }
+    ]
+  }
+}
+```
+
+`models` is permission, **not order**. `fallback` is a nonempty ordered array of at most
+64 distinct exact provider/model/effort tuples. Every tuple needs an exact grant; known
+virtual targets and fallback plus `prewalk` reject. A trusted root project may provide
+an ordered subsequence or `fallback:false`, never add/reorder destinations. Alternate
+workspaces do not supply grants. Tasks can disable fallback with `fallback:false` or
+narrow `models`; they cannot supply a chain. Explicit task `model` stays pinned unless
+`fallback:true` is also supplied. Opt-in requires membership and starts at that exact
+entry, considering only its subsequent authorized entries. Without a task override the
+profile chain, not the parent selection or profile `model` default, owns the primary.
+
+A chain starts at its first available authorized target and preserves its exact effort.
+Unavailable/missing/unauthenticated catalog targets are skipped with reasons before calls;
+unauthorized scopes/efforts, revoked grants and known virtual targets hard-stop, never skip.
+Authentication can still fail at request time: a runtime 401/403 is terminal. No provider,
+credential or destination is automatically discovered. Parent auth/refresh remains owned
+by the public registry; this feature neither copies keys nor loads parent extensions.
+
+Each eligible failed request receives **two same-model retries** (three attempts total)
+before advancing. Native Pi retries own transient attempts; a package-owned public
+`agent_before_settle` controller handles exhausted native retries and quota/credit limits.
+Quota backoff starts at 2 seconds and doubles, capped at 60 seconds. Provider retries are
+zero in the owned child settings, preventing retry multiplication. Success resets only
+the failure counter, not the selected backup. Authentication/permission failures, invalid
+requests, refusals, tool errors and cancellation do not trigger automatic recovery.
+
+Failed streamed drafts remain raw transcript evidence and are omitted from future model
+projection using append-only context edits. Failed tool-call drafts never execute; completed
+assistant/tool-result pairs remain and are not replayed by the SDK. A model may independently
+request a similar action later: this is not an exactly-once external-side-effect guarantee.
+Targets lacking image input are skipped rather than receiving Pi image placeholders.
+Context/output limits and effort are validated; context overflow is not a fallback trigger.
+No conversation truncation or capability conversion is added to make a target fit.
+
+Every physical attempt, including retries, consumes the same cumulative direct-request
+budget. Failed attempts can incur charges; `fallback.attempts[].usageKnown` distinguishes
+unmeasured failed usage from a measured zero. Known usage remains in native transcript
+accounting; `telemetry.costIncomplete` marks the displayed cost as a known subtotal. Backoff is within the existing deadline window, and cancellation/deadlines
+abort it without another request. Explicit resume retains route, failure count and all
+cumulative budgets. Existing explicit resume starts its ordinary new deadline window;
+reset alone does not renew it. New followup/revival generations validate a fresh chain.
+
+`/subagent-status <id> <generation>` reports the chain, current index/failure count,
+`exhausted`, skipped targets, and physical attempt/error/usage-known history. Recovery
+context edits, physical selections/responses and recovery audit entries are in the SDK
+transcript. The route is scoped to this child identity/generation and retained parent
+lifetime; it is not restored after parent shutdown/reload.
+
+Exhaustion never wraps. `/subagent-fallback-reset <id> <generation>` is **operator-only**,
+requires an idle/paused retained child, revalidates current/admitted grants and scopes,
+and selects the first available target without a model request. It preserves attempts,
+limits and cumulative budgets. A reset failed child may then explicitly resume, retaining
+the failed window as evidence. No model-facing reset action exists. A changed chain is
+not silently remapped on resume: explicit reset and revalidation are required. Restore
+revoked grants or start a newly authorized operation when reset is denied.
+
+The implementation is independent of any main-session fallback package: no shared config,
+state, imports, reset, virtual routing or implicit permissions. A chained profile works
+beneath a controlled virtual parent without invoking it. Unchained profiles retain the
+existing virtual-parent restriction unless they select an independently authorized physical
+profile/task model. Tests in `model-fallback-sdk.test.ts` and `model-fallback.test.ts` use
+Pi 1.5.2 public APIs and controlled providers, not paid/live inference or a combined installed
+extension compatibility certification.
 
 ## Prewalk — implemented bounded builtin subset
 

@@ -190,7 +190,7 @@ export default function delegation(pi: ExtensionAPI) {
       "Use delegate_task for authorized native delegation with explicit profiles. When subagent is available, prefer subagent for orchestration task owners. Native background and subagent async calls both wake this session after drain; continue independent work or yield, never poll. Supply the existing task workspace cwd; do not substitute inline implementation when a workflow requires a worker.",
     ],
     description:
-      "Delegate one assignment or a fully preflighted ordered tasks batch on the selected parent model by default. Optional exact model {provider,id,effort} requires an operator profile models grant and stays exact, suppressing inherited role prewalk; models may only narrow that grant list. No aliases/fallback/coercion. Configured role-default prewalk switches once after first edit/write, not a repository scan. Coding workers are supported through implementation; advisor/probes/speculation/history/executable resource inheritance remain unavailable. Optional cwd selects an existing workspace: root hooks see explicitly resolved builtin paths and a cwd-prefixed shell command; this is not sandboxing or transparent hook-cwd rebinding. Role tools are ceilings intersected with callable parent builtins; inactive tools stay inactive. Snapshots report effective tools. Bounded FIFO capacity; writers and parent tools may run together. Caller coordinates shared writes, including manual !/!! and external edits; no isolation or conflict prevention. Foreground waits without an extra completion notice; background delivers one ordered batch outcome after actual drain and wakes the parent (or queues a follow-up if busy), potentially adding model turns/costs. Nested foreground only, explicit spawn grants and available capacity required. Limits may only narrow operator policy. Supply exactly one inline assignment or taskFile (explicit non-hidden workspace-relative UTF-8 file, at most 50000 bytes, checked through parent read hooks). Optional resultSchema requires child submit_result; prose is never validated output. Previews are bounded; full result artifacts and transcripts retained after drain.",
+      "Delegate one assignment or a fully preflighted ordered tasks batch on the selected parent model by default. Optional exact model {provider,id,effort} requires an operator profile models grant and stays exact, suppressing inherited role prewalk; models may only narrow that grant list. No aliases/coercion. Operator profile fallback chains start at their own primary regardless of the parent model. An explicit task model stays pinned unless fallback:true opts into the profile chain; fallback:false disables it. Fallback cannot combine with prewalk. Configured role-default prewalk switches once after first edit/write, not a repository scan. Coding workers are supported through implementation; advisor/probes/speculation/history/executable resource inheritance remain unavailable. Optional cwd selects an existing workspace: root hooks see explicitly resolved builtin paths and a cwd-prefixed shell command; this is not sandboxing or transparent hook-cwd rebinding. Role tools are ceilings intersected with callable parent builtins; inactive tools stay inactive. Snapshots report effective tools. Bounded FIFO capacity; writers and parent tools may run together. Caller coordinates shared writes, including manual !/!! and external edits; no isolation or conflict prevention. Foreground waits without an extra completion notice; background delivers one ordered batch outcome after actual drain and wakes the parent (or queues a follow-up if busy), potentially adding model turns/costs. Nested foreground only, explicit spawn grants and available capacity required. Limits may only narrow operator policy. Supply exactly one inline assignment or taskFile (explicit non-hidden workspace-relative UTF-8 file, at most 50000 bytes, checked through parent read hooks). Optional resultSchema requires child submit_result; prose is never validated output. Previews are bounded; full result artifacts and transcripts retained after drain.",
     parameters,
     renderCall(args, theme) {
       return {
@@ -309,6 +309,7 @@ export default function delegation(pi: ExtensionAPI) {
         inputs.push({
           cwd,
           model: task.model,
+          fallback: task.fallback,
           assignment: text!,
           resultSchema: task.resultSchema,
           profile,
@@ -659,6 +660,13 @@ export default function delegation(pi: ExtensionAPI) {
     description: "List delegation identities, states and final results",
     handler: async (args) =>
       show(args.trim() ? coordinator.snapshot(ref(args)) : coordinator.list()),
+  });
+  pi.registerCommand("subagent-fallback-reset", {
+    description:
+      "Reset <task-id> <generation> fallback routing on an idle retained child; budgets and deadline unchanged",
+    handler: async (args) => {
+      await coordinator.resetFallback(ref(args));
+    },
   });
   pi.registerCommand("subagent-stop", {
     description: "Stop <task-id> <generation> and drain it",
