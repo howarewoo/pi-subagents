@@ -1234,6 +1234,7 @@ export async function runProfileEditor(
         const fresh = await ProfileConfigDraft.open(draft.destination, options);
         draft = fresh;
         catalog = fresh.catalog;
+        if (!catalog.profiles.some((profile) => profile.name === name)) name = "general";
         const created = await createRole(ctx, show, fresh, name!);
         if (created) {
           name = created;

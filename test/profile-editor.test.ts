@@ -661,6 +661,37 @@ test("structured exact rows repair an invalid reset and interdependent prewalk/f
   });
 });
 
+test("discarding an unsaved custom role then cancelling creation restores an existing selection", async (t) => {
+  const f = await files(t);
+  const d = dialogs(
+    [
+      { title: /Subagent Profiles/, input: ["e"] },
+      { title: /Choose write destination/, input: choose(1) },
+      { title: /Edit general/, input: { choice: "Create / copy custom role" } },
+      { title: /Independent custom definition/, input: { choice: "Blank independent definition" } },
+      { title: /Edit new-role.*unsaved/, input: { choice: "Create / copy custom role" } },
+      { title: /Unsaved profile draft/, input: choose(1) },
+      { title: /Edit general.*clean/, input: { choice: "Edit description" } },
+      { title: /Edit general.*unsaved/, input: { choice: "Review / Save" } },
+      {
+        title: /Review profile save/,
+        input: { choice: "Save this file" },
+        inspect: (_c, text) => assert.doesNotMatch(text, /new-role/),
+      },
+      { title: /Edit general.*clean/, input: ["\x1b"] },
+      { title: /Subagent Profiles/, input: ["\x1b"] },
+    ],
+    { inputs: ["new-role", undefined], description: "Edited existing role" },
+  );
+  await runProfileEditor(d.context, f.options);
+  assert.equal(d.assertFinished().descriptions, 1);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.globalPath, "utf8")), {
+    ...f.global,
+    general: { ...f.global.general, description: "Edited existing role" },
+  });
+  assert.deepEqual(JSON.parse(await fs.readFile(f.projectPath, "utf8")), f.project);
+});
+
 test("one-time general copy confirms explicit skills, strips leaf privileges and deletes independently", async (t) => {
   const f = await files(t);
   const skill = join(f.root, "SKILL.md");
