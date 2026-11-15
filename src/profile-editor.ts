@@ -1,4 +1,4 @@
-import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   SelectList,
   matchesKey,
@@ -27,6 +27,11 @@ import {
   type ProfileCatalog,
 } from "./profiles.ts";
 import { createProfileViewer } from "./profile-viewer.ts";
+import {
+  profileCell as cell,
+  profileRowPaint,
+  type ProfilePanelTheme,
+} from "./profile-presentation.ts";
 import { safe } from "./thread.ts";
 import { EFFORTS, modelSelection, sameSelection, type ModelSelection } from "./model-policy.ts";
 
@@ -39,13 +44,12 @@ export type ProfileEditorOptions = ProfileDraftOptions & {
   modelStatus?: (selection: ModelSelection) => string;
 };
 type Show = (view: ProfileEditorView) => Promise<string | undefined>;
-type ScreenTheme = Pick<Theme, "fg">;
 type ScreenKeys = Pick<KeybindingsManager, "matches" | "getKeys">;
 
 /** Bounded native selection/detail screen. Text dialogs run only after this interaction closes. */
 export function createProfileEditorScreen(
   view: ProfileEditorView,
-  theme: ScreenTheme,
+  theme: ProfilePanelTheme,
   keys: ScreenKeys,
   requestRender: () => void,
   done: (choice: string | undefined) => void,
@@ -56,22 +60,19 @@ export function createProfileEditorScreen(
   let maximum = 0;
   let viewport = 1;
   let compact = true;
-  const cell = (text: string, width: number) => {
-    const clipped = truncateToWidth(text, width);
-    return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
-  };
   return {
     capturesViewportInput: true,
     render(width) {
       width = Math.max(0, width);
       const height = Math.max(1, Math.floor(availableRows()));
+      const paint = profileRowPaint(theme, width);
       const close = safe(keys.getKeys("tui.select.cancel").join("/") || "Esc");
       const confirm = safe(keys.getKeys("tui.select.confirm").join("/") || "Enter");
       compact = width < 24 || height < 12;
       if (compact)
         return ["Profiles · resize", "Draft retained; no save", `${close}: back`]
           .slice(0, height)
-          .map((line) => truncateToWidth(line, width));
+          .map(paint);
       const inner = width - 4;
       const footer = [
         `↑↓ action · ${confirm} select · ${close} back`,
@@ -146,7 +147,7 @@ export function createProfileEditorScreen(
         frame("├", "", "┤"),
         ...footer.map((line) => row(theme.fg("muted", line))),
         frame("╰", "", "╯"),
-      ].map((line) => truncateToWidth(line, width));
+      ].map(paint);
     },
     handleInput(data) {
       if (keys.matches(data, "tui.select.cancel")) {
