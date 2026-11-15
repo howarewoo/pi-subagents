@@ -24,6 +24,7 @@ import {
 } from "./coordinator.ts";
 import { resolveProfile, intersectProfileGrants } from "./profiles.ts";
 import { runProfileEditor } from "./profile-editor.ts";
+import { readProfileModelCatalog } from "./profile-model-catalog.ts";
 import { createHub } from "./hub.ts";
 import { createChildWidget } from "./subagent-widget.ts";
 import { taskCard } from "./task-presentation.ts";
@@ -658,15 +659,7 @@ export default function delegation(pi: ExtensionAPI) {
         isProjectTrusted: () => ctx.isProjectTrusted(),
         availableSkills: () => ctx.getSystemPromptOptions().skills ?? [],
         coordinator,
-        modelStatus: (selection) => {
-          const model = ctx.modelRegistry.find(selection.provider, selection.id);
-          return model &&
-            ctx.modelRegistry
-              .getAvailable()
-              .some((item) => item.provider === model.provider && item.id === model.id)
-            ? "available metadata; admission still checks auth/scope/effort"
-            : "unavailable/unknown metadata; retained for review";
-        },
+        modelCatalog: () => readProfileModelCatalog(ctx),
       });
     },
   });
