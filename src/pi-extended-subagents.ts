@@ -1,5 +1,5 @@
 import { requireSupportedHost } from "./supported-host.ts";
-import { createProfileViewer, resolvedProfiles, profileToolPolicy } from "./profile-viewer.ts";
+import { resolvedProfiles, profileToolPolicy } from "./profile-viewer.ts";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { EFFORTS, sameSelection } from "./model-policy.ts";
 import { clippedText } from "./outcomes.ts";
@@ -22,7 +22,8 @@ import {
   type ChildSnapshot,
   type StartTask,
 } from "./coordinator.ts";
-import { resolveProfile, bundledProfiles, intersectProfileGrants } from "./profiles.ts";
+import { resolveProfile, intersectProfileGrants } from "./profiles.ts";
+import { runProfileEditor } from "./profile-editor.ts";
 import { createHub } from "./hub.ts";
 import { createChildWidget } from "./subagent-widget.ts";
 import { taskCard } from "./task-presentation.ts";
@@ -544,7 +545,7 @@ export default function delegation(pi: ExtensionAPI) {
       "subagent launches are async by default and wake this session after actual drain. Continue independent work or yield; do not poll or sleep. Use the exact returned id (UUID@generation) for status, steer, stop or resume. Resume continues a drained paused or completed conversation with its same identity/generation, full SDK context and cumulative budgets; unavailable context and stopped/failed identities reject. Use explicit delegate_coordinate followup/revive for fresh completed work.",
     ],
     description:
-      "Native delegation for orchestration and coding task owners. Launch {agent,task,cwd?,model?,async?} or an ordered {tasks:[...],async?,cwd?} batch. worker maps explicitly to the implementation profile; unknown/custom agent names reject. Model strings require exact provider/id[:effort] and operator grants. Actions: agents, list, status/stop with exact returned id, steer/resume with id and message. Resume requires a drained paused or completed session and restores its full conversation with the same identity/generation and session count; unavailable context and stopped/failed identities reject. Uses the same registry, parent permissions, limits and FIFO capacity as delegate_task. Writers and parent tools may run together; caller coordinates shared writes, with no isolation or collision prevention. Existing workspaces only: file paths and shell cwd are explicitly adapted through root builtin hooks. No automatic worktree creation/commits/apply/deletion, detached survival, script workflows or blanket competing API parity. Do not load another provider of the subagent tool alongside this extension.",
+      "Native delegation for orchestration and coding task owners. Launch {agent,task,cwd?,model?,async?} or an ordered {tasks:[...],async?,cwd?} batch. worker maps explicitly to the implementation profile; configured custom roles are supported; unknown agent names reject. Model strings require exact provider/id[:effort] and operator grants. Actions: agents, list, status/stop with exact returned id, steer/resume with id and message. Resume requires a drained paused or completed session and restores its full conversation with the same identity/generation and session count; unavailable context and stopped/failed identities reject. Uses the same registry, parent permissions, limits and FIFO capacity as delegate_task. Writers and parent tools may run together; caller coordinates shared writes, with no isolation or collision prevention. Existing workspaces only: file paths and shell cwd are explicitly adapted through root builtin hooks. No automatic worktree creation/commits/apply/deletion, detached survival, script workflows or blanket competing API parity. Do not load another provider of the subagent tool alongside this extension.",
     parameters: compatibleParameters,
     async execute(callerId, args, signal, onUpdate, ctx) {
       if (!("action" in args) || args.action === "resume" || args.action === "steer")
@@ -596,7 +597,17 @@ export default function delegation(pi: ExtensionAPI) {
       if (!("id" in args))
         return result(
           args.action === "agents"
-            ? { agents: [...bundledProfiles(), { name: "worker", profile: "implementation" }] }
+            ? {
+                agents: [
+                  ...(await resolvedProfiles(
+                    ctx.cwd,
+                    ctx.isProjectTrusted(),
+                    undefined,
+                    availableSkills(),
+                  )),
+                  { name: "worker", profile: "implementation" },
+                ],
+              }
             : owner.list().map(compatible),
         );
       const match = /^([0-9a-f-]{36})@([1-9][0-9]*)$/.exec(args.id);
@@ -630,30 +641,33 @@ export default function delegation(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("subagent-profiles", {
-    description: "Subagent Profiles: inspect resolved workspace profiles (read-only)",
+    description: "Subagent Profiles: inspect resolved profiles; explicitly edit in native TUI",
     handler: async (_args, ctx) => {
-      const profiles = await resolvedProfiles(
-        ctx.cwd,
-        ctx.isProjectTrusted(),
-        undefined,
-        ctx.getSystemPromptOptions().skills ?? [],
-      );
       if (ctx.mode !== "tui") {
+        const profiles = await resolvedProfiles(
+          ctx.cwd,
+          ctx.isProjectTrusted(),
+          undefined,
+          ctx.getSystemPromptOptions().skills ?? [],
+        );
         show({ toolPolicy: profileToolPolicy, profiles });
         return;
       }
-      await ctx.ui.custom<void>(
-        (tui, theme, keys, done) =>
-          createProfileViewer(
-            profiles,
-            theme,
-            keys,
-            () => tui.requestRender(),
-            () => done(),
-            () => Math.max(1, Math.floor(tui.terminal.rows * 0.9)),
-          ),
-        { overlay: true, overlayOptions: { width: "90%", maxHeight: "90%", anchor: "center" } },
-      );
+      await runProfileEditor(ctx, {
+        cwd: ctx.cwd,
+        isProjectTrusted: () => ctx.isProjectTrusted(),
+        availableSkills: () => ctx.getSystemPromptOptions().skills ?? [],
+        coordinator,
+        modelStatus: (selection) => {
+          const model = ctx.modelRegistry.find(selection.provider, selection.id);
+          return model &&
+            ctx.modelRegistry
+              .getAvailable()
+              .some((item) => item.provider === model.provider && item.id === model.id)
+            ? "available metadata; admission still checks auth/scope/effort"
+            : "unavailable/unknown metadata; retained for review";
+        },
+      });
     },
   });
   pi.registerCommand("subagent-status", {

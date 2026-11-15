@@ -84,6 +84,22 @@ function broadenedGrant(profile: Profile, grant: Profile) {
   );
 }
 
+/** Same-role authority identity is independent of ancestor capability subset checks. */
+function assertRoleAuthority(
+  live: Profile,
+  admitted: Pick<StartTask, "profile" | "parent">,
+  descendant?: Pick<StartTask, "profile">,
+): void {
+  if (live.projectCeiling !== admitted.profile.projectCeiling)
+    throw new Error(
+      "Project role ceiling binding changed; stop and launch a newly authorized identity",
+    );
+  if (descendant?.profile.projectCeiling && !live.spawn?.includes(descendant.profile.name))
+    throw new Error("Project-local incoming parent spawn grant revoked");
+  if (admitted.parent && live.projectCeiling && !live.projectSpawnAuthorized)
+    throw new Error("Project-local incoming spawn registration is missing or revoked");
+}
+
 function admittedModel(entry: Entry, selection: ModelSelection): boolean {
   return entry.input.profile.models === undefined
     ? sameSelection(selection, {
@@ -122,6 +138,16 @@ export class DelegationCoordinator {
     return [...this.history.values()]
       .map((record) => structuredClone(record.state))
       .concat(this.list());
+  }
+  /** Local deletion blockers only; superseded generations cannot resume (entry() rejects them).
+   * Include every descendant and idle/parked identity eligible for fresh followup, not just running tools.
+   * A stopped identity still blocks until its in-flight work has actually drained.
+   */
+  profileUsage(name: string): ChildSnapshot[] {
+    return this.list().filter(
+      (state) =>
+        state.profile === name && (!state.disposed || this.presence.get(state.id) !== "stopped"),
+    );
   }
   generations(id: string): ChildSnapshot[] {
     return this.sessions().filter((state) => state.id === id);
@@ -226,6 +252,7 @@ export class DelegationCoordinator {
     effective: ModelSelection,
     explicit?: ModelSelection,
   ): void {
+    assertRoleAuthority(input.profile, input);
     if (input.parent) {
       const parent = this.entry(input.parent);
       if (parent.cancelled || parent.paused || parent.state.disposed)
@@ -288,6 +315,7 @@ export class DelegationCoordinator {
         undefined,
         entry.input.availableSkills?.() ?? entry.input.skills,
       );
+      assertRoleAuthority(profile, entry.input, lineage[index - 1]?.input);
       if (!allows(profile, index)) throw new Error(denial);
     }
     // Policy loading yields: cancellation, pause, shutdown and generation changes win.
@@ -333,6 +361,17 @@ export class DelegationCoordinator {
     source?: Pick<StartTask, "context" | "toolMetadata" | "cwd">,
   ): Promise<void> {
     const parent = this.entry(ref);
+    if (profile.projectCeiling) {
+      const context = (source ?? parent.input).context;
+      const { profile: live } = await resolveProfile(
+        profile.name,
+        context.cwd,
+        context.isProjectTrusted(),
+        undefined,
+        parent.input.availableSkills?.() ?? parent.input.skills,
+      );
+      assertRoleAuthority(live, { profile, parent: ref });
+    }
     this.assertDescendantModels(
       parent,
       profile,
@@ -577,6 +616,7 @@ export class DelegationCoordinator {
   async renew(ref: ChildRef, input: StartTask, signal?: AbortSignal): Promise<ChildRef> {
     requireSupportedHost();
     const previous = this.entry(ref);
+    assertRoleAuthority(input.profile, previous.input);
     if (previous.resettingFallback) throw new Error("Fallback reset is in progress");
     this.renewalParent(ref);
     const profile = intersectProfileGrants(input.profile, previous.input.profile);
@@ -727,10 +767,12 @@ export class DelegationCoordinator {
         entry.input.availableSkills?.() ?? entry.input.skills,
       );
       assertResettable();
+      assertRoleAuthority(profile, entry.input);
       const narrowed = intersectProfileGrants(profile, entry.input.profile);
       const chain = taskFallback({ ...entry.input, profile: narrowed });
       if (!chain) throw new Error("Fallback policy is no longer enabled");
       let current: Entry | undefined = entry;
+      let descendant: Entry | undefined;
       while (current) {
         const live = (
           await resolveProfile(
@@ -742,9 +784,11 @@ export class DelegationCoordinator {
           )
         ).profile;
         assertResettable();
+        assertRoleAuthority(live, current.input, descendant?.input);
         for (const target of chain)
           if (!admittedModel(current, target) || !allowsModel(live, target))
             throw new Error("Fallback reset cannot broaden admitted model grants");
+        descendant = current;
         current = current.input.parent ? this.entry(current.input.parent) : undefined;
       }
       const fallback = {
@@ -905,6 +949,7 @@ export class DelegationCoordinator {
           current.input.availableSkills?.() ?? current.input.skills,
         );
         assertResumable();
+        assertRoleAuthority(profile, current.input, descendant?.input);
         if (
           (current.input.profile.models !== undefined && profile.models === undefined) ||
           !allowsModel(profile, selected) ||
@@ -1070,6 +1115,7 @@ export class DelegationCoordinator {
     if (state.exhausted) throw new Error("Fallback exhausted; operator reset required");
     authorizeFallback(entry.input.context, state.chain);
     let current: Entry | undefined = entry;
+    let descendant: Entry | undefined;
     while (current) {
       const { profile } = await resolveProfile(
         current.input.profile.name,
@@ -1078,6 +1124,7 @@ export class DelegationCoordinator {
         undefined,
         current.input.availableSkills?.() ?? current.input.skills,
       );
+      assertRoleAuthority(profile, current.input, descendant?.input);
       if (
         current === entry &&
         JSON.stringify(profile.fallback) !== JSON.stringify(entry.input.profile.fallback)
@@ -1086,6 +1133,7 @@ export class DelegationCoordinator {
       for (const target of state.chain)
         if (!admittedModel(current, target) || !allowsModel(profile, target))
           throw new Error("Fallback model authorization revoked");
+      descendant = current;
       current = current.input.parent ? this.entry(current.input.parent) : undefined;
     }
   }
@@ -1096,6 +1144,7 @@ export class DelegationCoordinator {
   ): Promise<void> {
     const { input } = entry;
     let current: Entry | undefined = entry;
+    let descendant: Entry | undefined;
     while (current) {
       const policy = (
         await resolveProfile(
@@ -1106,6 +1155,7 @@ export class DelegationCoordinator {
           current.input.availableSkills?.() ?? current.input.skills,
         )
       ).profile;
+      assertRoleAuthority(policy, current.input, descendant?.input);
       if (
         (current.input.profile.models !== undefined && policy.models === undefined) ||
         !allowsModel(policy, selected) ||
@@ -1118,6 +1168,7 @@ export class DelegationCoordinator {
         (!policy.prewalk || !sameSelection(policy.prewalk, entry.state.prewalk!.target))
       )
         throw new Error("Current prewalk grant revoked");
+      descendant = current;
       current = current.input.parent ? this.entry(current.input.parent) : undefined;
     }
     validateModelSelection(input.context, selected);

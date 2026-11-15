@@ -177,6 +177,12 @@ test("restricted general leaf grants are operator-owned; project narrowing and r
   );
   await assert.rejects(resolveProfile("scout", root, false), /mint leaf/);
   const { intersectProfileGrants } = await import("../src/profiles.ts");
+  // Catalog validation rejects invalid sibling definitions too.
+  await assert.rejects(resolveProfile("general", root, false), /mint leaf/);
+  await writeFile(
+    join(operator, "delegation.json"),
+    JSON.stringify({ general: { leafTools: ["reviewed"] } }),
+  );
   const profile = (await resolveProfile("general", root, false)).profile;
   assert.deepEqual(
     intersectProfileGrants({ ...profile, leafTools: ["new"] }, { ...profile, leafTools: [] })

@@ -10,7 +10,7 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-tui";
 import { safe } from "./thread.ts";
-import { bundledProfiles, resolveProfile, type Profile } from "./profiles.ts";
+import { resolvedCatalogProfiles, type Profile, type ProfileCatalog } from "./profiles.ts";
 
 export const profileToolPolicy =
   "Profile tools are maximum allowlists, not requirements. Admission intersects callable parent builtins without activating tools. Command context has no callable-tool dispatcher: effective tools are unknown here. Active declarations are not proof of callability. General inherits available parent skills and callable builtins within its ceiling, not parent instructions/history; only operator-reviewed leaf tools may be forwarded and callers coordinate concurrent writes. Leaf grants assert trusted code, not a sandbox. Inspect task snapshot tools, leafTools, skills and capabilityDenials for admitted grants.";
@@ -22,12 +22,7 @@ export async function resolvedProfiles(
   operatorDir?: string,
   availableSkills: readonly Skill[] = [],
 ): Promise<Profile[]> {
-  return Promise.all(
-    bundledProfiles().map(
-      async ({ name }) =>
-        (await resolveProfile(name, cwd, trusted, operatorDir, availableSkills)).profile,
-    ),
-  );
+  return resolvedCatalogProfiles(cwd, trusted, operatorDir, availableSkills);
 }
 
 type DetailLine = { text: string; heading?: boolean };
@@ -120,8 +115,20 @@ export function createProfileViewer(
   requestRender: () => void,
   done: () => void,
   availableRows: () => number,
+  options: {
+    initialRole?: string;
+    edit?: (name: string) => void;
+    catalog?: Pick<
+      ProfileCatalog,
+      "provenance" | "globalPath" | "projectPath" | "projectSpawnTargets"
+    >;
+    trusted?: boolean;
+  } = {},
 ): Component {
-  let selected = 0;
+  let selected = Math.max(
+    0,
+    profiles.findIndex((profile) => profile.name === options.initialRole),
+  );
   let offset = 0;
   let viewport = 1;
   let maximum = 0;
@@ -130,6 +137,7 @@ export function createProfileViewer(
     return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
   };
   return {
+    capturesViewportInput: true,
     render(width) {
       width = Math.max(0, width);
       const height = Math.max(1, Math.floor(availableRows()));
@@ -153,7 +161,7 @@ export function createProfileViewer(
       const rightWidth = wide ? inner - leftWidth - 3 : inner;
       const footer = [
         "↑↓ select · j/k scroll · PgUp/Dn · Home/End",
-        `${safe(close)}: close · callable tools unknown here`,
+        `${options.edit ? "Enter/e: edit · " : ""}${safe(close)}: close · callable tools unknown here`,
       ].flatMap((line) => wrapTextWithAnsi(line, inner));
       // Frames, divider and hints are reserved before assigning any viewport rows.
       const bodyHeight = height - 3 - footer.length;
@@ -172,7 +180,42 @@ export function createProfileViewer(
         );
       const profile = profiles[selected];
       const name = profile ? safe(profile.name).replaceAll("\n", " ") : "No selection";
-      const content = profile ? details(profile) : [{ text: "No resolved profiles" }];
+      const provenance = profile && options.catalog?.provenance[profile.name];
+      const content = profile
+        ? [
+            ...(provenance
+              ? [
+                  {
+                    text: `Source: ${provenance.source}${provenance.ceiling ? ` · authority ceiling: ${provenance.ceiling}` : ""}`,
+                  },
+                  {
+                    text: `Overrides: global ${provenance.globalOverride ? "yes" : "no"} · project ${provenance.projectOverride ? "yes" : "no"}`,
+                  },
+                ]
+              : []),
+            ...(options.catalog
+              ? [
+                  { text: `Global: ${options.catalog.globalPath}` },
+                  {
+                    text: `Project${options.trusted ? " (trusted)" : " (ignored: untrusted)"}: ${options.catalog.projectPath}`,
+                  },
+                  { text: "No write destination selected. Editing is explicit." },
+                  {
+                    text: `Registered incoming local targets (all trusted projects): ${JSON.stringify(options.catalog.projectSpawnTargets)}`,
+                  },
+                  ...(profile.projectCeiling
+                    ? [
+                        {
+                          text: `Incoming registration: ${profile.projectSpawnAuthorized ? "matching; separate parent spawn grant still required" : "not registered (root launch remains available)"}`,
+                        },
+                      ]
+                    : []),
+                  { text: "" },
+                ]
+              : []),
+            ...details(profile),
+          ]
+        : [{ text: "No resolved profiles" }];
       // A clipped pinned name still has a complete, scrollable representation.
       if (profile && (visibleWidth(name) > rightWidth || profile.name.includes("\n")))
         content.unshift({ text: profile.name });
@@ -230,6 +273,11 @@ export function createProfileViewer(
     handleInput(data) {
       if (keys.matches(data, "tui.select.cancel")) {
         done();
+        return;
+      }
+      if (options.edit && (data === "e" || keys.matches(data, "tui.select.confirm"))) {
+        const profile = profiles[selected];
+        if (profile) options.edit(profile.name);
         return;
       }
       if (keys.matches(data, "tui.select.up") || keys.matches(data, "tui.select.down")) {

@@ -1,13 +1,8 @@
 import { Type } from "typebox";
 import { EFFORTS } from "./model-policy.ts";
-import { COORDINATION_ACTIONS } from "./profiles.ts";
+import { COORDINATION_ACTIONS, ROLE_NAME_PATTERN } from "./profiles.ts";
 
-const role = Type.Union([
-  Type.Literal("general"),
-  Type.Literal("scout"),
-  Type.Literal("review"),
-  Type.Literal("implementation"),
-]);
+const role = Type.String({ pattern: ROLE_NAME_PATTERN, minLength: 1, maxLength: 64 });
 const limits = Type.Object(
   {
     depth: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -119,10 +114,9 @@ export const coordinationParameters = Type.Union([
   ),
 ]);
 
-const worker = Type.Union([role, Type.Literal("worker")]);
 const compatibleItem = Type.Object(
   {
-    agent: worker,
+    agent: role,
     task: Type.String({ minLength: 1 }),
     cwd: Type.Optional(
       Type.String({

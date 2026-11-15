@@ -9,6 +9,8 @@ export type ModelSelection = Readonly<{
 }>;
 export type ModelPolicy = Readonly<{
   models?: readonly ModelSelection[];
+  /** Internal continuing authority for inherited physical selection; not an override grant. */
+  inheritedModelCeiling?: readonly ModelSelection[];
   model?: ModelSelection;
   prewalk?: ModelSelection;
   /** Ordered routing policy, never a permission grant. */
@@ -34,7 +36,9 @@ export function sameSelection(a: ModelSelection, b: ModelSelection): boolean {
 }
 export function allowsModel(policy: ModelPolicy, selection: ModelSelection): boolean {
   return (
-    policy.models === undefined || policy.models.some((item) => sameSelection(item, selection))
+    (policy.models === undefined || policy.models.some((item) => sameSelection(item, selection))) &&
+    (policy.inheritedModelCeiling === undefined ||
+      policy.inheritedModelCeiling.some((item) => sameSelection(item, selection)))
   );
 }
 export function narrowModelPolicy(
