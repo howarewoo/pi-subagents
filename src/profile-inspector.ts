@@ -982,7 +982,8 @@ export function createEditableProfileInspector(
       const railWidth = wide ? Math.min(25, Math.floor(inner / 3)) : inner;
       const paneWidth = wide ? inner - railWidth - 3 : inner;
       const bodyHeight = height - 5;
-      viewport = bodyHeight - (wide ? 0 : 2) - 3;
+      const helpHeight = child ? 0 : 3;
+      viewport = bodyHeight - (wide ? 0 : 2) - helpHeight;
       childHeight = viewport;
       rows = buildRows();
       const actions = rows.filter((row) => row.run);
@@ -1070,16 +1071,17 @@ export function createEditableProfileInspector(
         : controller.reloadError
           ? "Read-only: reopening failed. Reload current allowed layers, or close."
           : selectedHelp;
-      content = [
-        ...content,
-        ...Array(Math.max(0, viewport - content.length)).fill(""),
-        "",
-        ...wrapTextWithAnsi(safe(help), paneWidth)
-          .slice(0, 2)
-          .map((line) =>
-            theme.fg(controller.failure || controller.reloadError ? "warning" : "muted", line),
-          ),
-      ];
+      if (!child)
+        content = [
+          ...content,
+          ...Array(Math.max(0, viewport - content.length)).fill(""),
+          "",
+          ...wrapTextWithAnsi(safe(help), paneWidth)
+            .slice(0, 2)
+            .map((line) =>
+              theme.fg(controller.failure || controller.reloadError ? "warning" : "muted", line),
+            ),
+        ];
       const profiles = catalog().profiles;
       if (!profiles.some((p) => p.name === name)) name = profiles[0]?.name ?? "general";
       const selectedIndex = profiles.findIndex((p) => p.name === name);
@@ -1111,7 +1113,7 @@ export function createEditableProfileInspector(
               theme.fg("border", " │ ") +
               cell(content[i] ?? "", paneWidth),
           )
-        : [...roster, ...Array.from({ length: viewport + 3 }, (_, i) => content[i] ?? "")];
+        : [...roster, ...Array.from({ length: viewport + helpHeight }, (_, i) => content[i] ?? "")];
       const row = (text: string) => paint(`│ ${cell(text, inner)} │`);
       const label = textEdit
         ? "Unfinished text · not committed"

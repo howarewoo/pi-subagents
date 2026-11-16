@@ -1132,7 +1132,7 @@ test("paused mutations still allow read-only nested target and delegation inspec
   assert.equal((await f.disk()).general.description, undefined);
 });
 
-test("integrated 80×28 Global Add can search and accept every supported effort without resizing", async (t) => {
+test("physical 80×28 Global Add uses the production 90% overlay and accepts every supported effort", async (t) => {
   for (const [index, effort] of EFFORTS.entries())
     await t.test(effort, async (t) => {
       const f = await inspector(t);
@@ -1147,11 +1147,12 @@ test("integrated 80×28 Global Add can search and accept every supported effort 
           },
         ],
       });
-      f.resize(80, 28);
+      f.resize(Math.floor(80 * 0.9), Math.floor(28 * 0.9));
       f.open("Models");
       f.activate("Add to chain / Add and grant");
       assert.doesNotMatch(f.render(), /Models · resize/);
       assert.match(f.render(), /Grant permits explicit overrides too/);
+      assert.match(f.render(), /All effort model/);
       assert.match(f.render(), /other workspaces/);
       f.input("all-effort", "\r", "\r");
       for (let i = 0; i <= index; i++) f.input("\x1b[C");
