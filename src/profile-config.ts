@@ -67,21 +67,37 @@ export class ProfileConfigError extends Error {
   }
 }
 
-async function snapshot(path: string): Promise<FileSnapshot> {
+async function snapshot(path: string, isProjectTrusted?: () => boolean): Promise<FileSnapshot> {
+  // Recheck at each I/O boundary: an outer trust check can expire while open/stat awaits.
+  const assertReadable = () => {
+    if (isProjectTrusted && !isProjectTrusted())
+      throw new ProfileConfigError(
+        "conflict",
+        path,
+        "Workspace trust changed; Project read refused",
+      );
+  };
+  assertReadable();
   let before;
   try {
     before = await fs.lstat(path);
   } catch (error) {
+    assertReadable();
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { path, content: null };
     throw error;
   }
+  assertReadable();
   if (!before.isFile() || before.isSymbolicLink())
     throw new Error(`Refusing non-regular or symlink config ${path}`);
   const file = await fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
+    assertReadable();
     const info = await file.stat();
+    assertReadable();
     const content = await file.readFile("utf8");
+    assertReadable();
     const after = await fs.lstat(path);
+    assertReadable();
     if (
       !after.isFile() ||
       info.ino !== before.ino ||
@@ -224,7 +240,10 @@ export class ProfileConfigDraft {
         throw new Error("Project editing requires existing host workspace trust");
       const files = {
         global: await snapshot(globalPath),
-        project: trusted ? await snapshot(projectPath) : { path: projectPath, content: null },
+        project:
+          trusted && options.isProjectTrusted()
+            ? await snapshot(projectPath, options.isProjectTrusted)
+            : { path: projectPath, content: null },
       };
       const draft = new ProfileConfigDraft(destination, options, trusted, files, {
         global: parse(files.global),
@@ -330,10 +349,14 @@ export class ProfileConfigDraft {
     for (const destination of this.trusted
       ? (["global", "project"] as const)
       : (["global"] as const)) {
+      this.assertTrust();
       const path = this.files[destination].path;
       let current;
       try {
-        current = await snapshot(path);
+        current = await snapshot(
+          path,
+          destination === "project" ? this.options.isProjectTrusted : undefined,
+        );
       } catch (error) {
         throw new ProfileConfigError(
           "conflict",
@@ -348,6 +371,7 @@ export class ProfileConfigDraft {
           "Config changed since this draft opened; draft retained. Reopen and review, never force-overwrite",
         );
     }
+    this.assertTrust();
   }
   save(): Promise<{ path: string; catalog: ProfileCatalog }> {
     // Capture the submitted draft, not subsequent UI mutations while this save waits its turn.
@@ -404,9 +428,13 @@ export class ProfileConfigDraft {
       replacement = "completed";
       temp = undefined;
       stage = "verify";
+      this.assertTrust();
       const files = {
         global: await snapshot(this.files.global.path),
-        project: this.trusted ? await snapshot(this.files.project.path) : this.files.project,
+        project:
+          this.trusted && this.options.isProjectTrusted()
+            ? await snapshot(this.files.project.path, this.options.isProjectTrusted)
+            : this.files.project,
       };
       if (files[this.destination].content !== content)
         throw new Error(
@@ -422,11 +450,22 @@ export class ProfileConfigDraft {
       // Skill validation awaits filesystem work; confirm the verified snapshot still matches disk.
       for (const destination of this.trusted
         ? (["global", "project"] as const)
-        : (["global"] as const))
-        if (!isDeepStrictEqual(await snapshot(files[destination].path), files[destination]))
+        : (["global"] as const)) {
+        this.assertTrust();
+        if (
+          !isDeepStrictEqual(
+            await snapshot(
+              files[destination].path,
+              destination === "project" ? this.options.isProjectTrusted : undefined,
+            ),
+            files[destination],
+          )
+        )
           throw new Error(
             `Config changed during readback: ${files[destination].path}; no rollback`,
           );
+      }
+      this.assertTrust();
       this.files = files;
       this.baseline = catalog;
       // Never discard additional in-memory edits made after save() was called.
@@ -444,12 +483,21 @@ export class ProfileConfigDraft {
         }
       }
       const observed: NonNullable<ProfileConfigError["observed"]> = {};
-      for (const destination of this.trusted
+      for (const destination of this.trusted && this.options.isProjectTrusted()
         ? (["global", "project"] as const)
         : (["global"] as const)) {
+        if (destination === "project" && !this.options.isProjectTrusted()) continue;
         const path = this.files[destination].path;
         try {
-          observed[destination] = { path, content: (await snapshot(path)).content };
+          observed[destination] = {
+            path,
+            content: (
+              await snapshot(
+                path,
+                destination === "project" ? this.options.isProjectTrusted : undefined,
+              )
+            ).content,
+          };
         } catch (read) {
           observed[destination] = { path, error: String(read) };
         }

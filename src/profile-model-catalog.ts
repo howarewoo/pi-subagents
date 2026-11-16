@@ -17,6 +17,8 @@ export type ProfileModelSource = () => ProfileModelCatalog;
 export type ProfileModelPickOptions = {
   title: string;
   context: readonly string[];
+  /** Caller discloses the semantic effect; the picker itself never writes or grants. */
+  selectionLabel?: string;
   /** Undefined allows any accessible selection; [] permits none. Never creates grants. */
   allowed?: readonly ModelSelection[];
   excluded?: readonly ModelSelection[];
