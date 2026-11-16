@@ -9,10 +9,24 @@ import {
 import {
   profileCell as cell,
   profileRowPaint,
+  profileSettingLines,
   type ProfilePanelTheme,
 } from "./profile-presentation.ts";
+import {
+  profileOverview,
+  profileSettingLabels,
+  profileSettingHelp,
+  profileRawRole,
+  profileSettingFields,
+  type ProfileSetting,
+} from "./profile-overview.ts";
 import { safe } from "./thread.ts";
-import { resolvedCatalogProfiles, type Profile, type ProfileCatalog } from "./profiles.ts";
+import {
+  resolveProfileCatalog,
+  resolvedCatalogProfiles,
+  type Profile,
+  type ProfileCatalog,
+} from "./profiles.ts";
 
 export const profileToolPolicy =
   "Profile tools are maximum allowlists, not requirements. Admission intersects callable parent builtins without activating tools. Command context has no callable-tool dispatcher: effective tools are unknown here. Active declarations are not proof of callability. General inherits available parent skills and callable builtins within its ceiling, not parent instructions/history; only operator-reviewed leaf tools may be forwarded and callers coordinate concurrent writes. Leaf grants assert trusted code, not a sandbox. Inspect task snapshot tools, leafTools, skills and capabilityDenials for admitted grants.";
@@ -29,7 +43,7 @@ export async function resolvedProfiles(
 
 type DetailLine = { text: string; heading?: boolean };
 
-function details(profile: Profile): DetailLine[] {
+function details(profile: Profile, panel: ProfileSetting): DetailLine[] {
   const list = (items: readonly string[] | undefined) =>
     items?.length ? items.join(", ") : "none";
   const known = new Set([
@@ -63,46 +77,60 @@ function details(profile: Profile): DetailLine[] {
       ];
     return [value(`${indent}${label}: ${String(item)}`)];
   };
-  return [
-    heading("Instructions"),
-    value("Description"),
-    value(profile.description),
-    value(""),
-    value("Prompt"),
-    value(profile.prompt),
-    value(""),
-    heading("Model chain"),
-    ...(profile.fallback
-      ? [
-          value("Fallback chain (routing, not grants)"),
-          ...profile.fallback.map((target, index) =>
+  if (panel === "description" || panel === "prompt")
+    return [
+      heading(panel === "description" ? "Description" : "Instructions (prompt)"),
+      value(profile[panel]),
+    ];
+  if (panel === "route")
+    return [
+      heading("Models"),
+      value("Fallback chain (routing, not grants)"),
+      ...(profile.fallback?.length
+        ? profile.fallback.map((target, index) =>
             value(
-              `${index === 0 ? "Primary" : `Retry ${index}`}: ${target.provider}/${target.id} · ${target.effort}`,
+              `${index === 0 ? "Primary" : `  ↳ Retry ${index}`}: ${target.provider}/${target.id} · ${target.effort}`,
             ),
-          ),
-          value("Unavailable targets may be skipped; runtime admission still applies."),
-        ]
-      : [value("No chain · Advanced default / selected parent model route applies.")]),
-    value(""),
-    heading("Permissions"),
-    value(`Tools ceiling: ${list(profile.tools)}`),
-    value("Callable tools: unknown in command context; inspect admitted task tools."),
-    ...(profile.name === "general"
-      ? [
-          value(
-            "Inheritance: available parent skills and callable builtins; no parent instructions/history.",
-          ),
-        ]
-      : []),
-    value(
-      `Reviewed leaf ceiling: ${list(profile.leafTools)} (shared writes; trusted code, not sandboxed)`,
-    ),
-    value(`Spawn ceiling: ${list(profile.spawn)}`),
-    value(`Coordination: ${list(profile.coordination)}`),
-    value(""),
-    value("Skills (exact paths)"),
-    ...(profile.skills.length ? profile.skills.map(value) : [value("none")]),
-    value(""),
+          )
+        : [
+            value(
+              `No chain · ${profile.prewalk ? `Prewalk: ${profile.prewalk.provider}/${profile.prewalk.id} · ${profile.prewalk.effort}` : "Advanced default / selected parent model route applies."}`,
+            ),
+          ]),
+      value("Unavailable targets may be skipped; runtime admission still applies."),
+    ];
+  if (panel === "tools")
+    return [
+      heading("Tools"),
+      value(`Tools ceiling: ${list(profile.tools)}`),
+      value("Callable tools: unknown in command context; inspect admitted task tools."),
+      ...(profile.name === "general"
+        ? [
+            value(
+              "Inheritance: available parent skills and callable builtins; no parent instructions/history.",
+            ),
+          ]
+        : []),
+    ];
+  if (panel === "skills")
+    return [
+      heading("Skills (exact paths)"),
+      ...(profile.skills.length ? profile.skills.map(value) : [value("none")]),
+    ];
+  if (panel === "delegation")
+    return [
+      heading("Delegation"),
+      value(`Spawn ceiling: ${list(profile.spawn)}`),
+      value(`Coordination: ${list(profile.coordination)}`),
+    ];
+  if (panel === "leafTools")
+    return [
+      heading("Reviewed tools (leafTools)"),
+      value(
+        `Reviewed leaf ceiling: ${list(profile.leafTools)} (shared writes; trusted code, not sandboxed)`,
+      ),
+    ];
+  return [
     heading("Advanced · model policy"),
     ...structured(
       profile.fallback ? "Model default (unchained)" : "Model default",
@@ -113,7 +141,6 @@ function details(profile: Profile): DetailLine[] {
     ...Object.entries(profile)
       .filter(([key]) => !known.has(key))
       .map(([key, item]) => value(`${key}: ${JSON.stringify(item)}`)),
-    value(""),
     value(
       "Admission also applies parent/ancestry, model availability and capacity checks. This viewer grants nothing.",
     ),
@@ -134,8 +161,10 @@ export function createProfileViewer(
     catalog?: Pick<
       ProfileCatalog,
       "provenance" | "globalPath" | "projectPath" | "projectSpawnTargets"
-    >;
+    > &
+      Partial<Pick<ProfileCatalog, "global" | "project">>;
     trusted?: boolean;
+    availableSkills?: readonly Skill[];
   } = {},
 ): Component {
   let selected = Math.max(
@@ -147,7 +176,12 @@ export function createProfileViewer(
   let maximum = 0;
   let compact = true;
   let focus: "profiles" | "settings" = "profiles";
-  let groupOffsets: number[] = [];
+
+  let setting: ProfileSetting = "description";
+  let panel: ProfileSetting | undefined;
+  let settingKeys: ProfileSetting[] = [];
+  let follow = true;
+  let visibleSettings = new Set<ProfileSetting>();
   const scrollPositions = new Map<string, number>();
   return {
     capturesViewportInput: true,
@@ -166,17 +200,18 @@ export function createProfileViewer(
       const leftWidth = wide ? Math.min(28, Math.floor(inner / 3)) : inner;
       const rightWidth = wide ? inner - leftWidth - 3 : inner;
       const footer = [
-        `Tab: ${focus} · ↑↓ ${focus === "profiles" ? "select" : "scroll"} · j/k scroll · PgUp/Dn · Home/End`,
-        "1 Instructions · 2 Chain · 3 Permissions · 4 Advanced",
-        `${options.edit ? `${confirm}/e: edit · ` : ""}${safe(close)}: close · callable tools unknown here`,
+        `Tab: ${focus} · ↑↓ ${focus === "settings" && panel ? "scroll" : "select"} · j/k scroll · PgUp/Dn · Home/End`,
+        "1 Profile · 2 Model · 3 Access · 4 Advanced",
+        `${confirm}: open · ${options.edit ? "e: edit · " : ""}${safe(close)}: back/close · callable tools unknown here`,
       ].flatMap((line) => wrapTextWithAnsi(line, inner));
       // Frames, divider and hints are reserved before assigning any viewport rows.
       const bodyHeight = height - 3 - footer.length;
       const listHeight = wide ? bodyHeight : 1;
       const detailHeight = wide ? bodyHeight : bodyHeight - listHeight - 1;
       if (detailHeight < 4) return fallback();
+      viewport = detailHeight - 6;
+      if (viewport < 1) return fallback();
       compact = false;
-      viewport = detailHeight - 3;
       const profile = profiles[selected];
       const name = profile ? safe(profile.name).replaceAll("\n", " ") : "No selection";
       const provenance = profile && options.catalog?.provenance[profile.name];
@@ -190,7 +225,7 @@ export function createProfileViewer(
               .map((entry, index) =>
                 theme.fg(
                   start + index === selected ? "accent" : "text",
-                  `${start + index === selected ? ">" : " "} ${safe(entry.name).replaceAll("\n", " ")}`,
+                  `${start + index === selected && focus === "profiles" ? ">" : " "} ${safe(entry.name).replaceAll("\n", " ")}`,
                 ),
               ),
             "",
@@ -201,42 +236,58 @@ export function createProfileViewer(
         : [
             theme.fg(
               "accent",
-              `Profiles ${profiles.length ? selected + 1 : 0}/${profiles.length} · > ${name}`,
+              `Profiles ${profiles.length ? selected + 1 : 0}/${profiles.length} · ${focus === "profiles" ? "> " : ""}${name}`,
             ),
           ];
       const content = profile
         ? [
-            ...details(profile),
-            { text: "" },
-            { text: "Advanced · source and security", heading: true },
-            ...(provenance
+            ...details(profile, panel ?? "description"),
+            ...(panel === "advanced"
               ? [
-                  {
-                    text: `Source: ${provenance.source}${provenance.ceiling ? ` · authority ceiling: ${provenance.ceiling}` : ""}`,
-                  },
-                  {
-                    text: `Overrides: global ${provenance.globalOverride ? "yes" : "no"} · project ${provenance.projectOverride ? "yes" : "no"}`,
-                  },
-                ]
-              : []),
-            ...(options.catalog
-              ? [
-                  { text: `Global: ${options.catalog.globalPath}` },
-                  {
-                    text: `Project${options.trusted ? " (trusted)" : " (ignored: untrusted)"}: ${options.catalog.projectPath}`,
-                  },
-                  { text: "No write destination selected. Editing is explicit." },
-                  {
-                    text: `Registered incoming local targets (all trusted projects): ${JSON.stringify(options.catalog.projectSpawnTargets)}`,
-                  },
-                  ...(profile.projectCeiling
+                  { text: "" },
+                  { text: "Advanced · source and security", heading: true },
+                  ...(provenance
                     ? [
                         {
-                          text: `Incoming registration: ${profile.projectSpawnAuthorized ? "matching; separate parent spawn grant still required" : "not registered (root launch remains available)"}`,
+                          text: `Source: ${provenance.source}${provenance.ceiling ? ` · authority ceiling: ${provenance.ceiling}` : ""}`,
+                        },
+                        {
+                          text: `Overrides: global ${provenance.globalOverride ? "yes" : "no"} · project ${provenance.projectOverride ? "yes" : "no"}`,
                         },
                       ]
                     : []),
-                  { text: "" },
+                  ...(options.catalog
+                    ? [
+                        { text: `Global: ${options.catalog.globalPath}` },
+                        {
+                          text: `Project${options.trusted ? " (trusted)" : " (ignored: untrusted)"}: ${options.catalog.projectPath}`,
+                        },
+                        { text: "No write destination selected. Editing is explicit." },
+                        ...(options.catalog.global
+                          ? [
+                              { text: `Raw Global: ${JSON.stringify(options.catalog.global)}` },
+                              {
+                                text: `Raw Project: ${JSON.stringify(options.catalog.project ?? {})}`,
+                              },
+                              {
+                                text: `Inherited operator profile: ${JSON.stringify(resolveProfileCatalog(options.catalog.global, {}, options.availableSkills).profiles.find((p) => p.name === profile.name))}`,
+                              },
+                              { text: `Effective workspace: ${JSON.stringify(profile)}` },
+                            ]
+                          : []),
+                        {
+                          text: `Registered incoming local targets (all trusted projects): ${JSON.stringify(options.catalog.projectSpawnTargets)}`,
+                        },
+                        ...(profile.projectCeiling
+                          ? [
+                              {
+                                text: `Incoming registration: ${profile.projectSpawnAuthorized ? "matching; separate parent spawn grant still required" : "not registered (root launch remains available)"}`,
+                              },
+                            ]
+                          : []),
+                        { text: "" },
+                      ]
+                    : []),
                 ]
               : []),
           ]
@@ -244,20 +295,84 @@ export function createProfileViewer(
       // A clipped pinned name still has a complete, scrollable representation.
       if (profile && (visibleWidth(name) > rightWidth || profile.name.includes("\n")))
         content.unshift({ text: profile.name });
-      groupOffsets = [];
-      let lineCount = 0;
-      const lines = content.flatMap(({ text, heading }) => {
-        if (heading && groupOffsets.length < 4) groupOffsets.push(lineCount);
+
+      let lines = content.flatMap(({ text, heading }) => {
         const wrappedLines = safe(text)
           .split("\n")
           .flatMap((line) =>
             wrapTextWithAnsi(line, rightWidth).map((wrapped) =>
-              theme.fg(heading ? "accent" : "text", wrapped),
+              heading
+                ? theme.style(wrapped, { fg: "accent", bold: true })
+                : theme.fg("text", wrapped),
             ),
           );
-        lineCount += wrappedLines.length;
+
         return wrappedLines;
       });
+      visibleSettings = new Set();
+      if (profile && !panel) {
+        let count = 0;
+
+        settingKeys = [];
+        const metadata = (key: ProfileSetting) => {
+          if (!options.catalog?.global || key === "advanced") return "";
+          const layers = {
+            global: options.catalog.global,
+            project: options.trusted ? (options.catalog.project ?? {}) : {},
+          };
+          const fields = profileSettingFields(key);
+          for (const layer of ["project", "global"] as const) {
+            const raw = profileRawRole(layers, layer, profile.name);
+            if (fields.some((f) => Object.hasOwn(raw, f)))
+              return `${fields.some((f) => Array.isArray(raw[f]) && (raw[f] as unknown[]).length === 0) ? "explicit empty · " : ""}${layer === "global" ? "Global" : "Project"} override`;
+          }
+          return "inherited";
+        };
+        lines = profileOverview(profile).flatMap((item) => {
+          if (!item.key) {
+            const heading = [theme.style(item.heading!, { fg: "accent", bold: true }), ""];
+            count += heading.length;
+            return heading;
+          }
+          const key = item.key;
+          settingKeys.push(key);
+          const from = count;
+          const rendered = [
+            ...profileSettingLines(
+              theme,
+              profileSettingLabels[key],
+              safe(item.value),
+              rightWidth,
+              key === setting && focus === "settings",
+              metadata(key),
+            ),
+            "",
+          ];
+          count += rendered.length;
+          if (follow && key === setting && focus === "settings") {
+            if (from < offset) offset = from;
+            else if (count > offset + viewport) offset = Math.max(0, count - viewport);
+          }
+          return rendered;
+        });
+        let index = 0;
+        for (const item of profileOverview(profile)) {
+          const size = item.key
+            ? profileSettingLines(
+                theme,
+                profileSettingLabels[item.key],
+                safe(item.value),
+                rightWidth,
+                false,
+                metadata(item.key),
+              ).length + 1
+            : 2;
+          if (item.key && index >= offset && index + size <= offset + viewport)
+            visibleSettings.add(item.key);
+          index += size;
+        }
+        follow = false;
+      }
       maximum = Math.max(0, lines.length - viewport);
       offset = Math.min(maximum, offset);
       const detail = [
@@ -265,6 +380,20 @@ export function createProfileViewer(
         theme.fg("muted", `resolved · read-only · ${provenance?.source ?? "snapshot"}`),
         ...lines.slice(offset, offset + viewport),
         ...Array(Math.max(0, viewport - (lines.length - offset))).fill(""),
+        "",
+        ...Array.from({ length: 2 }, (_, i) =>
+          theme.fg(
+            "muted",
+            wrapTextWithAnsi(
+              safe(
+                panel
+                  ? "Read-only detail · Esc returns to the selected setting."
+                  : profileSettingHelp[setting],
+              ),
+              rightWidth,
+            )[i] ?? "",
+          ),
+        ),
         theme.fg(
           "muted",
           `${profiles.length ? selected + 1 : 0}/${profiles.length} · detail ${offset + 1}–${Math.min(lines.length, offset + viewport)}/${lines.length}`,
@@ -302,7 +431,12 @@ export function createProfileViewer(
     },
     handleInput(data) {
       if (keys.matches(data, "tui.select.cancel")) {
-        done();
+        if (panel) {
+          panel = undefined;
+          offset = 0;
+          follow = true;
+          requestRender();
+        } else done();
         return;
       }
       if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
@@ -311,12 +445,25 @@ export function createProfileViewer(
         return;
       }
       if (/^[1-4]$/.test(data)) {
-        offset = Math.min(maximum, groupOffsets[Number(data) - 1] ?? 0);
+        panel = undefined;
+        setting = ["description", "route", "tools", "advanced"][Number(data) - 1] as ProfileSetting;
+        offset = 0;
+        follow = true;
         focus = "settings";
         requestRender();
         return;
       }
-      if (options.edit && (data === "e" || keys.matches(data, "tui.select.confirm"))) {
+      if (keys.matches(data, "tui.select.confirm")) {
+        if (compact) return;
+        if (focus === "profiles") focus = "settings";
+        else if (!panel && visibleSettings.has(setting)) {
+          panel = setting;
+          offset = 0;
+        }
+        requestRender();
+        return;
+      }
+      if (options.edit && data === "e") {
         if (compact) return;
         const profile = profiles[selected];
         if (profile) options.edit(profile.name);
@@ -324,11 +471,22 @@ export function createProfileViewer(
       }
       if (keys.matches(data, "tui.select.up") || keys.matches(data, "tui.select.down")) {
         const delta = keys.matches(data, "tui.select.up") ? -1 : 1;
-        if (focus === "settings") offset = Math.max(0, Math.min(maximum, offset + delta));
-        else {
+        if (focus === "settings") {
+          if (panel) offset = Math.max(0, Math.min(maximum, offset + delta));
+          else {
+            setting =
+              settingKeys[
+                Math.max(0, Math.min(settingKeys.length - 1, settingKeys.indexOf(setting) + delta))
+              ] ?? "description";
+            follow = true;
+          }
+        } else {
           if (profiles[selected]) scrollPositions.set(profiles[selected].name, offset);
           selected = Math.max(0, Math.min(profiles.length - 1, selected + delta));
           offset = scrollPositions.get(profiles[selected]?.name ?? "") ?? 0;
+          panel = undefined;
+          setting = "description";
+          follow = true;
         }
       } else if (data === "j") offset = Math.min(maximum, offset + 1);
       else if (data === "k") offset = Math.max(0, offset - 1);

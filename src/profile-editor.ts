@@ -103,14 +103,13 @@ export function createProfileEditorScreen(
       menu.setSelectedIndex(selected);
       const roster = menu.render(menuWidth).slice(0, menuHeight);
       const lines = [
-        view.title,
-        `Selected action: ${view.choices[selected]?.label ?? "none"}`,
-        ...view.lines,
-      ].flatMap((line) =>
-        safe(line)
-          .split("\n")
-          .flatMap((part) => wrapTextWithAnsi(part, detailWidth)),
-      );
+        theme.style(safe(view.title), { fg: "accent", bold: true }),
+        "",
+        theme.style("Selected action", { bold: true }) +
+          `: ${safe(view.choices[selected]?.label ?? "none")}`,
+        "",
+        ...view.lines.flatMap((line) => [safe(line), ""]),
+      ].flatMap((line) => line.split("\n").flatMap((part) => wrapTextWithAnsi(part, detailWidth)));
       viewport = Math.max(1, detailHeight - 1);
       maximum = Math.max(0, lines.length - viewport);
       offset = Math.min(offset, maximum);
@@ -809,7 +808,12 @@ export async function runProfileEditor(
               () => tui.requestRender(),
               () => done(undefined),
               () => Math.max(1, Math.floor(tui.terminal.rows * 0.9)),
-              { edit: done, catalog, trusted: options.isProjectTrusted() },
+              {
+                edit: done,
+                catalog,
+                trusted: options.isProjectTrusted(),
+                availableSkills: options.availableSkills?.(),
+              },
             ),
           {
             overlay: true,

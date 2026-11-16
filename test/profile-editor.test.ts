@@ -25,6 +25,7 @@ import { createEditableProfileInspector, type InspectorExit } from "../src/profi
 import { ProfileAutosaveController } from "../src/profile-autosave.ts";
 import { ProfileConfigDraft, type ProfileDraftOptions } from "../src/profile-config.ts";
 import { bundledProfiles } from "../src/profiles.ts";
+import { EFFORTS } from "../src/model-policy.ts";
 import { profileModelReason, type ProfileModelCatalog } from "../src/profile-model-catalog.ts";
 
 const keys = {
@@ -183,6 +184,11 @@ async function inspector(
     }
     assert.fail(`Unreachable action ${label}:\n${render()}`);
   };
+  const open = (label: string) => {
+    input("1"); // Group jumps return to the compact overview, without changing the destination.
+    go(label);
+    input("\r");
+  };
   const activate = (label: string) => {
     go(label);
     input("\r");
@@ -195,6 +201,7 @@ async function inspector(
     input,
     go,
     activate,
+    open,
     renders: () => renders,
     setMetadata(value: ProfileModelCatalog) {
       metadata = value;
@@ -216,6 +223,7 @@ function deferred() {
 
 test("editable Inspector commits Enter/blur once to original profile, native multiline submits, Escape cancels unfinished input only", async (t) => {
   const f = await inspector(t);
+  f.open("Description");
   f.activate("Description");
   f.input("\x05", "\x15", "j/k 路径 é 👩‍💻", "\t", "down", "\t");
   assert.match(f.render(), /scout/);
@@ -223,10 +231,12 @@ test("editable Inspector commits Enter/blur once to original profile, native mul
   assert.equal((await f.disk()).general.description, "j/k 路径 é 👩‍💻");
   assert.equal((await f.disk()).scout, undefined);
   f.input("\t", "up", "\t");
+  f.open("Description");
   f.activate("Description");
   f.input("\x05", "\x15", "not committed", "\x1b");
   assert.equal((await f.disk()).general.description, "j/k 路径 é 👩‍💻");
-  f.activate("Prompt");
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
   f.input("\x01", "\x0b", "\x1b[200~Multiline\nUnicode j/k 路径\x1b[201~", "\r", "\t");
   await f.controller.settled();
   assert.equal((await f.disk()).general.prompt, "Multiline\nUnicode j/k 路径");
@@ -250,6 +260,7 @@ test("catalog inside persistent rail discloses atomic Add/grant, supports depend
     await rename(...args);
     writes.push(await f.disk());
   });
+  f.open("Models");
   f.activate("Add to chain / Add and grant");
   assert.match(f.render(), /Profiles/);
   assert.match(f.render(), /explicit overrides/);
@@ -257,13 +268,12 @@ test("catalog inside persistent rail discloses atomic Add/grant, supports depend
   f.input("Beta", "\r", "\r", "\x1b[C", "\r", "\r");
   await entered.promise;
   assert.equal(f.controller.pending.length, 1);
-  f.go("  ↑ Earlier"); // First target boundary may be disabled; choose the Beta row's action below.
-  f.input("down");
-  f.go("Retry 1");
-  f.input("down", "\r");
+  f.activate("↳ Retry 1");
+  f.activate("  ↑ Earlier");
   assert.equal(f.controller.pending.length, 2);
   f.input("\t", "down", "down", "\t");
-  f.activate("Prompt");
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
   f.input("\x01", "\x0b", "cross-profile", "\r");
   assert.equal(f.controller.pending.at(-1)!.profile, "review");
   assert.match(f.render(), /pending|Pending/);
@@ -283,30 +293,32 @@ test("immediate permissions, exact skills/leaf grants and dependent grant remova
   const f = await inspector(t, {
     general: { tools: ["read", "write"], models: [a], fallback: [a] },
   });
-  f.activate("tools:");
+  f.open("Tools");
   f.activate("[x] write");
   await f.controller.settled();
   assert.deepEqual((await f.disk()).general.tools, ["read"]);
   f.input("1");
-  f.activate("coordination:");
+  f.open("Delegation");
+  f.activate("Coordination (coordination):");
   f.activate("[ ] message");
   await f.controller.settled();
   assert.deepEqual((await f.disk()).general.coordination, ["message"]);
   const skill = join(f.root, "SKILL.md");
   await fs.writeFile(skill, "---\nname: fixture\ndescription: Controlled skill\n---\nInstructions");
   f.input("1");
-  f.activate("skills:");
+  f.open("Skills");
   f.activate("Add exact absolute skill path");
   f.input(skill, "\r");
   await f.controller.settled();
   assert.deepEqual((await f.disk()).general.skills, [skill]);
   f.input("1");
-  f.activate("leafTools:");
+  f.open("Reviewed tools");
   f.activate("Add exact reviewed leaf name");
   f.input("trusted_leaf", "\r");
   await f.controller.settled();
   assert.deepEqual((await f.disk()).general.leafTools, ["trusted_leaf"]);
   f.input("1");
+  f.open("Advanced");
   f.activate("Exact model grants:");
   f.go("Remove grant:");
   assert.match(f.render(), /Required by a current/);
@@ -314,11 +326,13 @@ test("immediate permissions, exact skills/leaf grants and dependent grant remova
   assert.deepEqual((await f.disk()).general.models, [a]);
   f.input("1");
   f.setMetadata({ entries: [], error: "Metadata unavailable" });
+  f.open("Description");
   f.activate("Description");
   f.input("\x05", "\x15", "unrelated", "\r");
   await f.controller.settled();
   assert.equal((await f.disk()).general.description, "unrelated");
-  f.go("Primary");
+  f.open("Models");
+  f.activate("Primary");
   assert.match(f.render(), /Warning:/);
   f.activate("  Remove final target");
   await f.controller.settled();
@@ -334,6 +348,7 @@ test("failure retains attempted field, cancels drain permanently, browsing remai
     if (fail && String(args[0]).endsWith(".tmp")) throw new Error("injected permission failure");
     return open(...args);
   });
+  f.open("Description");
   f.activate("Description");
   f.input("\x05", "\x15", "attempted", "\r");
   f.input("\x1b");
@@ -349,6 +364,7 @@ test("failure retains attempted field, cancels drain permanently, browsing remai
   assert.equal(f.exit().exited, false);
   assert.equal((await f.disk()).general.description, "attempted");
   await fs.writeFile(f.projectPath, JSON.stringify({ review: { description: "external" } }));
+  f.open("Description");
   f.activate("Description");
   f.input("\x05", "\x15", "abandon", "\r");
   await f.controller.settled();
@@ -364,6 +380,7 @@ test("failure retains attempted field, cancels drain permanently, browsing remai
 
 test("wide/narrow/short/tiny and paint retain focus/state, no hidden action activation; j/k stay printable inside native input", async (t) => {
   const f = await inspector(t);
+  f.open("Description");
   f.activate("Description");
   f.input("\x05", "\x15", "jkjk");
   for (const [w, h] of [
@@ -390,7 +407,7 @@ test("wide/narrow/short/tiny and paint retain focus/state, no hidden action acti
     colors: { customMessageBg: oklchColor(0.3, 0.15, 330) },
     fg: (_c: string, s: string) => `\x1b[31m${s}\x1b[0m\x1b[49m`,
     style: (s: string, { bg }: ThemeStyle) => {
-      assert.ok(bg && typeof bg !== "string");
+      if (bg) assert.ok(typeof bg !== "string");
       return styleText(s, { bg }, "truecolor");
     },
   };
@@ -433,6 +450,7 @@ test("Project-local profile under Global stays browsable with explicit Project s
     "local",
   );
   assert.match(f.render(), /Project-local/);
+  f.open("Description");
   f.activate("Description");
   assert.equal(f.controller.pending.length, 0);
   assert.equal((await f.disk()).customProfiles, undefined);
@@ -838,7 +856,9 @@ test("command entry is read-only, explicit destination leads to real inline auto
             assert.match(draw(), /Saved · verified/);
             component.handleInput?.("\r");
             draw();
-            for (const data of ["\x05", "\x15", "Command saved", "\r", "\x1b"]) {
+            component.handleInput?.("\r");
+            draw();
+            for (const data of ["\x05", "\x15", "Command saved", "\r", "\x1b", "\x1b"]) {
               draw();
               component.handleInput?.(data);
             }
@@ -907,7 +927,7 @@ test("exact-entry local validation retains native Input and focus without queuin
     skill,
     "---\nname: local-input\ndescription: Local input validation fixture\n---\nInstructions",
   );
-  f.activate("skills:");
+  f.open("Skills");
   f.activate("Add exact absolute skill path");
   f.input("relative/SKILL.md", "\r");
   assert.match(f.render(), /absolute skill path/);
@@ -925,7 +945,7 @@ test("exact-entry local validation retains native Input and focus without queuin
   assert.equal(f.controller.pending.length, 0);
   f.input("\x1b");
   f.input("1");
-  f.activate("leafTools:");
+  f.open("Reviewed tools");
   f.activate("Add exact reviewed leaf name");
   f.input("reviewed_leaf", "\r");
   await f.controller.settled();
@@ -946,7 +966,12 @@ test("resize Escape cancels hidden single-line/multiline/catalog input before na
     writes++;
     return rename(...args);
   });
-  for (const field of ["Description", "Prompt", "Add to chain / Add and grant"]) {
+  for (const [setting, field] of [
+    ["Description", "Description"],
+    ["Instructions", "Instructions (prompt)"],
+    ["Models", "Add to chain / Add and grant"],
+  ]) {
+    f.open(setting);
     f.activate(field);
     f.input("cancel hidden input");
     f.resize(20, 6);
@@ -965,12 +990,193 @@ test("resize Escape cancels hidden single-line/multiline/catalog input before na
 
 test("empty description and multiline prompt remain valid explicit item commits", async (t) => {
   const f = await inspector(t);
+  f.open("Description");
   f.activate("Description");
   f.input("\x05", "\x15", "\r");
-  f.activate("Prompt");
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
   f.input("\x01", "\x0b", "\r");
   await f.controller.settled();
   assert.equal(f.controller.status, "saved");
   assert.equal((await f.disk()).general.description, "");
   assert.equal((await f.disk()).general.prompt, "");
+});
+
+test("compact overview is browsing-only; focused model targets keep exact identity and route controls separate", async (t) => {
+  const f = await inspector(t, { general: { models: [a, b], fallback: [a, b], tools: [] } });
+  let writes = 0;
+  const rename = fs.rename;
+  t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+    writes++;
+    return rename(...args);
+  });
+  const initial = f.render();
+  assert.match(initial, /Editing GLOBAL/);
+  assert.match(initial, /Description/);
+  assert.match(initial, /Instructions/);
+  assert.doesNotMatch(initial, /Last verified|Earlier|Remove from chain|Reset chain|GLOBAL REACH/);
+  f.open("Models");
+  assert.match(f.render(), /Primary.*Friendly Alpha/);
+  assert.match(f.render(), /↳ Retry 1.*Friendly Beta/);
+  assert.doesNotMatch(f.render(), /Earlier|Change supported effort|Remove from chain/);
+  f.activate("↳ Retry 1");
+  const target = f.render();
+  assert.match(target, /fixture\/b.*high/);
+  assert.doesNotMatch(target, /Primary.*Friendly Alpha/);
+  f.input("\x1b");
+  assert.match(f.render(), /› ↳ Retry 1/);
+  f.input("\x1b");
+  assert.match(f.render(), /› Models/);
+  f.open("Tools");
+  assert.match(f.render(), /explicit empty grant; denies all/);
+  f.input("\x1b");
+  assert.match(f.render(), /› Tools/);
+  await f.controller.settled();
+  assert.equal(writes, 0);
+  assert.equal(f.controller.pending.length, 0);
+  assert.deepEqual((await f.disk()).general.fallback, [a, b]);
+});
+
+test("same-friendly-name unavailable saved routes retain exact selected-target identity and recovery overrides nested help", async (t) => {
+  const f = await inspector(t, { general: { models: [a, b], fallback: [a, b] } });
+  f.setMetadata({ entries: models.entries.map((e) => ({ ...e, name: "Same friendly name" })) });
+  f.open("Models");
+  f.activate("↳ Retry 1");
+  assert.match(f.render(), /Exact target: fixture\/b · high/);
+  f.setMetadata({ entries: [] });
+  assert.match(f.render(), /Warning: Unavailable/);
+  f.activate("  Remove from chain");
+  await f.controller.settled();
+  assert.deepEqual((await f.disk()).general.fallback, [a]);
+  assert.deepEqual((await f.disk()).general.models, [a, b]);
+  const open = fs.open;
+  t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    if (String(args[0]).endsWith(".tmp")) throw new Error("injected before replacement");
+    return open(...args);
+  });
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
+  f.input("replacement instructions", "\r");
+  await f.controller.settled();
+  f.input("\t", "down", "\t");
+  f.go("Retry same action");
+  assert.match(f.render(), /general.prompt.*Not saved|general.prompt.*unsaved/);
+  f.activate("Revert · discard");
+  assert.equal(f.controller.pending.length, 0);
+  assert.deepEqual(
+    (await f.disk()).general.fallback,
+    [a],
+    "earlier verified route save survives recovery",
+  );
+});
+
+test("route-level disclosures follow selection and distinguish Disable from inherited Reset before autosave", async (t) => {
+  const f = await inspector(t, { general: { models: [a, b], fallback: [a, b] } });
+  f.open("Models");
+  assert.doesNotMatch(f.render(), /Keeps exact model grants|Reset removes this layer/);
+  f.go("Disable chain");
+  assert.match(f.render(), /Keeps exact model grants/);
+  assert.match(f.render(), /Disables fallback.*selected parent model/);
+  assert.match(f.render(), /permissions[\s│]*may deny dispatch/);
+  assert.equal(f.controller.pending.length, 0);
+  f.input("\r");
+  await f.controller.settled();
+  assert.equal((await f.disk()).general.fallback, false);
+  assert.deepEqual((await f.disk()).general.models, [a, b]);
+  f.go("Reset chain to inherited");
+  assert.match(f.render(), /Reset removes this layer's fallback/);
+  f.input("\r");
+  await f.controller.settled();
+  assert.equal(Object.hasOwn((await f.disk()).general, "fallback"), false);
+  assert.deepEqual((await f.disk()).general.models, [a, b]);
+});
+
+test("very long unavailable saved model identity stays inspectable and removable through bounded target rows", async (t) => {
+  const target = { ...a, id: "long-saved-model-".repeat(300) + "EXACT-TAIL" };
+  const f = await inspector(t, { general: { models: [target], fallback: [target] } });
+  f.setMetadata({ entries: [] });
+  f.resize(80, 28);
+  f.open("Models");
+  f.activate("Primary");
+  f.go("  Remove final target");
+  assert.match(f.render(), /keep grants/);
+  f.input("\r");
+  await f.controller.settled();
+  assert.equal((await f.disk()).general.fallback, false);
+  assert.deepEqual(
+    (await f.disk()).general.models,
+    [target],
+    "display clipping never normalizes exact identity or revokes the grant",
+  );
+});
+
+test("paused mutations still allow read-only nested target and delegation inspection without replaying the failed intent", async (t) => {
+  const f = await inspector(t, { general: { models: [a], fallback: [a] } });
+  const open = fs.open;
+  t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    if (String(args[0]).endsWith(".tmp")) throw new Error("synthetic write failure");
+    return open(...args);
+  });
+  f.open("Description");
+  f.activate("Description");
+  f.input("\x05", "\x15", "Pending description", "\r");
+  await f.controller.settled();
+  assert.equal(f.controller.status, "not-saved");
+  f.open("Models");
+  f.activate("Primary");
+  assert.match(f.render(), /Exact target: fixture\/a · off/);
+  f.open("Delegation");
+  f.activate("Spawn targets (spawn):");
+  assert.match(f.render(), /\[disabled: Read-only\]/);
+  assert.equal(f.controller.pending.length, 1);
+  assert.equal((await f.disk()).general.description, undefined);
+});
+
+test("integrated 80×28 Global Add can search and accept every supported effort without resizing", async (t) => {
+  for (const [index, effort] of EFFORTS.entries())
+    await t.test(effort, async (t) => {
+      const f = await inspector(t);
+      f.setMetadata({
+        entries: [
+          {
+            provider: "fixture",
+            id: "all-effort-target",
+            name: "All effort model",
+            providerLabel: "Fixture Provider",
+            efforts: EFFORTS.map((effort) => ({ effort })),
+          },
+        ],
+      });
+      f.resize(80, 28);
+      f.open("Models");
+      f.activate("Add to chain / Add and grant");
+      assert.doesNotMatch(f.render(), /Models · resize/);
+      assert.match(f.render(), /Grant permits explicit overrides too/);
+      assert.match(f.render(), /other workspaces/);
+      f.input("all-effort", "\r", "\r");
+      for (let i = 0; i <= index; i++) f.input("\x1b[C");
+      assert.equal(f.controller.pending.length, 0);
+      assert.match(f.render(), new RegExp(`Effort: ${effort}`));
+      f.input("\x1bOP"); // F1 exposes complete secondary metadata without leaving the picker.
+      let details = f.render();
+      for (let i = 0; i < 30; i++) {
+        f.input("j");
+        details += f.render();
+      }
+      for (const supported of EFFORTS)
+        assert.ok(details.includes(`· ${supported}`), `${supported} must remain inspectable`);
+      assert.match(details, /fixture\/all-effort-target/);
+      f.input("\r");
+      assert.equal(
+        f.controller.pending.length,
+        0,
+        "Enter in metadata details cannot accept a hidden selection",
+      );
+      f.input("\x1b", "\r", "\r");
+      await f.controller.settled();
+      const target = { provider: "fixture", id: "all-effort-target", effort };
+      assert.deepEqual((await f.disk()).general.fallback, [target]);
+      assert.deepEqual((await f.disk()).general.models, [target]);
+      assert.equal(f.controller.status, "saved");
+    });
 });
