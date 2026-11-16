@@ -268,7 +268,7 @@ test("catalog inside persistent rail discloses atomic Add/grant, supports depend
   f.input("Beta", "\r", "\r", "\x1b[C", "\r", "\r");
   await entered.promise;
   assert.equal(f.controller.pending.length, 1);
-  f.activate("↳ Retry 1");
+  f.activate("↳ Fallback 1");
   f.activate("  ↑ Earlier");
   assert.equal(f.controller.pending.length, 2);
   f.input("\t", "down", "down", "\t");
@@ -332,7 +332,7 @@ test("immediate permissions, exact skills/leaf grants and dependent grant remova
   await f.controller.settled();
   assert.equal((await f.disk()).general.description, "unrelated");
   f.open("Models");
-  f.activate("Primary");
+  f.activate("Default");
   assert.match(f.render(), /Warning:/);
   f.activate("  Remove final target");
   await f.controller.settled();
@@ -1016,15 +1016,15 @@ test("compact overview is browsing-only; focused model targets keep exact identi
   assert.match(initial, /Instructions/);
   assert.doesNotMatch(initial, /Last verified|Earlier|Remove from chain|Reset chain|GLOBAL REACH/);
   f.open("Models");
-  assert.match(f.render(), /Primary.*Friendly Alpha/);
-  assert.match(f.render(), /↳ Retry 1.*Friendly Beta/);
+  assert.match(f.render(), /Default.*Friendly Alpha/);
+  assert.match(f.render(), /↳ Fallback 1.*Friendly Beta/);
   assert.doesNotMatch(f.render(), /Earlier|Change supported effort|Remove from chain/);
-  f.activate("↳ Retry 1");
+  f.activate("↳ Fallback 1");
   const target = f.render();
   assert.match(target, /fixture\/b.*high/);
-  assert.doesNotMatch(target, /Primary.*Friendly Alpha/);
+  assert.doesNotMatch(target, /Default.*Friendly Alpha/);
   f.input("\x1b");
-  assert.match(f.render(), /› ↳ Retry 1/);
+  assert.match(f.render(), /› ↳ Fallback 1/);
   f.input("\x1b");
   assert.match(f.render(), /› Models/);
   f.open("Tools");
@@ -1041,7 +1041,7 @@ test("same-friendly-name unavailable saved routes retain exact selected-target i
   const f = await inspector(t, { general: { models: [a, b], fallback: [a, b] } });
   f.setMetadata({ entries: models.entries.map((e) => ({ ...e, name: "Same friendly name" })) });
   f.open("Models");
-  f.activate("↳ Retry 1");
+  f.activate("↳ Fallback 1");
   assert.match(f.render(), /Exact target: fixture\/b · high/);
   f.setMetadata({ entries: [] });
   assert.match(f.render(), /Warning: Unavailable/);
@@ -1097,7 +1097,7 @@ test("very long unavailable saved model identity stays inspectable and removable
   f.setMetadata({ entries: [] });
   f.resize(80, 28);
   f.open("Models");
-  f.activate("Primary");
+  f.activate("Default");
   f.go("  Remove final target");
   assert.match(f.render(), /keep grants/);
   f.input("\r");
@@ -1123,13 +1123,119 @@ test("paused mutations still allow read-only nested target and delegation inspec
   await f.controller.settled();
   assert.equal(f.controller.status, "not-saved");
   f.open("Models");
-  f.activate("Primary");
+  f.activate("Default");
   assert.match(f.render(), /Exact target: fixture\/a · off/);
   f.open("Delegation");
   f.activate("Spawn targets (spawn):");
   assert.match(f.render(), /\[disabled: Read-only\]/);
   assert.equal(f.controller.pending.length, 1);
   assert.equal((await f.disk()).general.description, undefined);
+});
+
+test("production-sized model flow browses eligible rows, promotes the first target and preserves the unchained default", async (t) => {
+  const f = await inspector(t, { general: { model: b, models: [a, b], fallback: [a] } });
+  f.setMetadata({
+    entries: [
+      models.entries[0],
+      {
+        ...models.entries[0],
+        id: "blocked",
+        name: "Hidden Scope Model",
+        efforts: [{ effort: "off", reason: "Outside current session model/effort scope" }],
+      },
+      models.entries[1],
+    ],
+  });
+  for (const [width, height] of [
+    [72, 25],
+    [120, 36],
+  ]) {
+    f.resize(width, height);
+    f.open("Models");
+    f.activate("Add to chain / Add and grant");
+    assert.doesNotMatch(f.render(), /Models · resize|Hidden Scope Model/);
+    assert.match(f.render(), /1 model hidden: session scope/);
+    f.input("down");
+    assert.match(f.render(), /› Friendly Alpha/);
+    f.input("down");
+    assert.match(f.render(), /› Friendly Beta/);
+    f.input("\r");
+    assert.match(f.render(), /Effort: not chosen/);
+    assert.equal(f.controller.pending.length, 0);
+    if (width === 72) f.input("\x1b");
+  }
+  f.input("\x1b[C", "\r", "\r");
+  await f.controller.settled();
+  assert.equal(f.controller.status, "saved");
+  assert.deepEqual((await f.disk()).general.fallback, [a, b]);
+  assert.deepEqual((await f.disk()).general.model, b);
+  assert.match(f.render(), /Default.*Friendly Alpha/);
+  assert.match(f.render(), /↳ Fallback 1.*Friendly Beta/);
+  f.open("Advanced");
+  assert.match(f.render(), /Default is the first entry in Models/);
+  f.input("\x1b[F");
+  assert.doesNotMatch(f.render(), /Choose model|Reset model/);
+  assert.equal(f.controller.pending.length, 0);
+  f.open("Models");
+  f.activate("↳ Fallback 1");
+  f.activate("  ↑ Earlier");
+  await f.controller.settled();
+  assert.deepEqual((await f.disk()).general.fallback, [b, a]);
+  assert.deepEqual((await f.disk()).general.model, b);
+  assert.match(f.render(), /Default.*Friendly Beta/);
+  f.activate("  Remove from chain");
+  await f.controller.settled();
+  assert.match(f.render(), /Default.*Friendly Alpha/);
+  assert.doesNotMatch(f.render(), /↳ Fallback/);
+  f.go("Disable chain");
+  assert.match(f.render(), /Disables fallback.*Friendly Beta/);
+  f.input("\r");
+  await f.controller.settled();
+  assert.equal((await f.disk()).general.fallback, false);
+  assert.deepEqual((await f.disk()).general.model, b);
+  assert.deepEqual((await f.disk()).general.models, [a, b]);
+  f.open("Advanced");
+  f.go("Choose model from exact grants");
+  assert.match(f.render(), /model: Friendly Beta/);
+  assert.equal(f.controller.status, "saved");
+});
+
+test("production overlay retains eligible results and confirmation when mixed hidden reasons wrap", async (t) => {
+  const f = await inspector(t, { general: { models: [a], fallback: [a] } });
+  f.setMetadata({
+    entries: [
+      { ...models.entries[0], efforts: [{ effort: "off" }] },
+      {
+        ...models.entries[0],
+        id: "scoped",
+        efforts: [{ effort: "off", reason: "Outside current session model/effort scope" }],
+      },
+      {
+        ...models.entries[0],
+        id: "unavailable",
+        efforts: [
+          { effort: "off", reason: "Unavailable physical model metadata or configured access" },
+        ],
+      },
+      models.entries[1],
+    ],
+  });
+  f.resize(72, 25);
+  f.open("Models");
+  f.activate("Add to chain / Add and grant");
+  const rendered = f.render();
+  assert.doesNotMatch(rendered, /Models · resize/);
+  assert.match(rendered, /3 models hidden: already present, session scope/);
+  assert.match(rendered.replace(/[│\s]+/g, " "), /unavailable metadata\/access/);
+  assert.match(rendered, /Refresh metadata/);
+  f.input("down");
+  assert.match(f.render(), /› Friendly Beta/);
+  f.input("\r");
+  assert.match(f.render(), /Effort: not chosen/);
+  f.input("\x1b[C", "\r", "\r");
+  await f.controller.settled();
+  assert.equal(f.controller.status, "saved");
+  assert.deepEqual((await f.disk()).general.fallback, [a, b]);
 });
 
 test("physical 80×28 Global Add uses the production 90% overlay and accepts every supported effort", async (t) => {

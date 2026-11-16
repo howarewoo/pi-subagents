@@ -177,6 +177,78 @@ test("picker native search accepts printable j/k and paste, provider filtering a
   assert.match(p.render(), /not chosen/);
 });
 
+test("arrows enter eligible results directly from Search without skipping the first model or choosing effort", () => {
+  const last = {
+    ...catalog.entries[0],
+    id: "last",
+    name: "Last Model",
+    efforts: [{ effort: "off" as const }],
+  };
+  const p = picker(() => ({ entries: [...catalog.entries, last] }));
+  assert.doesNotMatch(p.render(), /Second Model/);
+  assert.match(p.render(), /1 model hidden: session scope/);
+  p.send("down");
+  assert.match(p.render(), /› Friendly Model/);
+  p.send("down");
+  assert.match(p.render(), /› Last Model/);
+  p.send("up");
+  assert.match(p.render(), /› Friendly Model/);
+  p.send("down", "enter", "enter", "enter");
+  assert.equal(p.finished, false, "browsing/Enter cannot implicitly choose an effort");
+  p.send("\x1b[Z", "\x1b[C", "enter", "enter");
+  assert.deepEqual(p.result, { provider: last.provider, id: last.id, effort: "off" });
+});
+
+test("hidden-model reasons follow search/provider and exact effort eligibility, including empty efforts", () => {
+  const empty = { ...catalog.entries[0], id: "empty", name: "No efforts", efforts: [] };
+  const source = () => ({ entries: [...catalog.entries, empty] });
+  const p = picker(source, { ...options, allowed: [a], excluded: [a] });
+  assert.doesNotMatch(p.render(), /Friendly Model|Second Model|No efforts/);
+  assert.match(p.render(), /All matching models are hidden/);
+  assert.match(p.render(), /3 models hidden:/);
+  assert.match(p.render(), /already present/);
+  assert.match(p.render(), /no supported efforts/);
+  p.send("Friendly");
+  assert.match(p.render(), /1 model hidden:/);
+  assert.doesNotMatch(p.render(), /no supported efforts/);
+  p.send("\t", "\x1b[C", "\x1b[C");
+  assert.match(p.render(), /No matching models/);
+  assert.doesNotMatch(p.render(), /models? hidden:/);
+  p.send("\t", "down", "enter", "\x1b[C", "enter", "enter");
+  assert.equal(p.finished, false);
+  const partial = picker(() => catalog, { ...options, allowed: [a], excluded: [b] });
+  assert.match(partial.render(), /Friendly Model/);
+  assert.doesNotMatch(partial.render(), /Second Model/);
+  const none = picker(() => catalog, { ...options, allowed: [] });
+  assert.match(none.render(), /exact grants/);
+  assert.match(none.render(), /0 matches/);
+});
+
+test("stale confirmation rebuilds eligible rows, clears effort and explains rejection without saving", () => {
+  let current = catalog;
+  const p = picker(() => current);
+  p.send("down", "enter", "\x1b[C", "enter");
+  current = {
+    entries: catalog.entries.map((entry) => ({
+      ...entry,
+      efforts: entry.efforts.map((e) => ({
+        ...e,
+        reason: "Outside current session model/effort scope",
+      })),
+    })),
+  };
+  p.send("enter");
+  assert.equal(p.finished, false);
+  assert.doesNotMatch(p.render(), /Friendly Model/);
+  assert.match(p.render(), /Outside current session model\/effort scope/);
+  assert.match(p.render(), /Effort: not chosen/);
+  current = catalog;
+  p.send("\t", "enter");
+  assert.match(p.render(), /Friendly Model/);
+  assert.match(p.render(), /Effort: not chosen/);
+  assert.equal(p.finished, false);
+});
+
 test("empty/error/unavailable source states have metadata Refresh/back and never manual-ID fallback", () => {
   for (const source of [
     () => ({ entries: [] }),

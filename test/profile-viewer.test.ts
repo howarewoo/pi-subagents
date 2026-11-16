@@ -493,7 +493,14 @@ test("configured fallback chains are visible separately from unordered model gra
   const primary = { provider: "primary-chain-marker", id: "primary", effort: "high" as const };
   const backup = { provider: "backup-chain-marker", id: "backup", effort: "low" as const };
   const viewer = createProfileViewer(
-    [{ ...bundledProfiles()[0], models: [backup, primary], fallback: [primary, backup] }],
+    [
+      {
+        ...bundledProfiles()[0],
+        model: backup,
+        models: [backup, primary],
+        fallback: [primary, backup],
+      },
+    ],
     theme,
     keys,
     () => {},
@@ -501,11 +508,12 @@ test("configured fallback chains are visible separately from unordered model gra
     () => 30,
   );
   for (const width of [120, 42]) {
-    const output = scrollThrough(viewer, width).replace(/\s/g, "");
-    assert.match(output, /Fallbackchain\(routing,notgrants\)/);
-    assert.match(output, /primary-chain-marker/);
-    assert.match(output, /backup-chain-marker/);
-    assert.match(output, /Modeldefault\(unchained\)/);
+    const output = scrollThrough(viewer, width).replace(/[\s│]/g, "");
+    assert.match(output, /Defaultandorderedfallbacks\(routing,notgrants\)/);
+    assert.match(output, /Default:primary-chain-marker\/primary/);
+    assert.match(output, /↳Fallback1:backup-chain-marker\/backup/);
+    assert.match(output, /Unchainedroute\(onlywhenchainingisbypassed\/disabled\)/);
+    assert.doesNotMatch(output, /Modeldefault/);
   }
 });
 
@@ -529,7 +537,7 @@ test("Inspector focus and group jumps retain the selected role through stacked a
   assert.doesNotMatch(model, /> general/); // One keyboard cursor belongs to the focused pane.
   assert.deepEqual(edited, []);
   viewer.handleInput!("\r");
-  assert.match(viewer.render(120).join("\n"), /Fallback chain/);
+  assert.match(viewer.render(120).join("\n"), /Default and ordered fallbacks/);
   assert.deepEqual(edited, [], "Enter inspects; only e requests an edit destination");
   viewer.handleInput!("\x1b");
   assert.equal(closed, 0);

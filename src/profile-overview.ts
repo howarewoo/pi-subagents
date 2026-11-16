@@ -24,7 +24,8 @@ export const profileSettingLabels: Record<ProfileSetting, string> = {
 export const profileSettingHelp: Record<ProfileSetting, string> = {
   description: "Description: a short explanation of this profile.",
   prompt: "Instructions (prompt): complete child instructions, not parent conversation/history.",
-  route: "Models: primary and ordered fallbacks. Routing is separate from exact model grants.",
+  route:
+    "Models: first entry is the default, followed by ordered fallbacks. Exact grants remain separate.",
   tools:
     "Tools: maximum allowlist, not a count of callable tools. Explicit empty denies; reset inherits.",
   skills: "Skills: exact path grants. Explicit empty denies; inherited values remain inspectable.",
@@ -57,7 +58,7 @@ export function profileOverview(profile: Profile, route?: string) {
       const selectionLabel = (target: NonNullable<Profile["model"]>) =>
         `${truncateToWidth(safe(`${target.provider}/${target.id}`), 48)} · ${target.effort}`;
       const routeSummary = profile.fallback?.length
-        ? `${route ?? selectionLabel(profile.fallback[0])} · ${profile.fallback.length - 1} fallback${profile.fallback.length === 2 ? "" : "s"}`
+        ? `Default · ${route ?? selectionLabel(profile.fallback[0])} · ${profile.fallback.length - 1} fallback${profile.fallback.length === 2 ? "" : "s"}`
         : profile.prewalk
           ? `Prewalk · ${selectionLabel(profile.prewalk)}`
           : profile.model

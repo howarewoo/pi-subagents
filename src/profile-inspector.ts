@@ -701,7 +701,9 @@ export function createEditableProfileInspector(
                     : "add-chain"
                   : key === "delegation"
                     ? "list:spawn"
-                    : "select:model";
+                    : profile.fallback
+                      ? "select:prewalk"
+                      : "select:model";
           },
         });
       }
@@ -720,7 +722,7 @@ export function createEditableProfileInspector(
       if (panel === "route") {
         heading(`Models${fieldState("fallback") ? ` · ${fieldState("fallback")}` : ""}`, "chain");
         info(
-          "Primary runs first; retries follow in order. Unavailable rows may be skipped; admission still applies.",
+          "Default runs first; fallbacks follow in order. Unavailable targets may be skipped; admission still applies.",
         );
         const chain = profile.fallback ?? [];
         if (!chain.length)
@@ -732,7 +734,7 @@ export function createEditableProfileInspector(
           if (targetPanel && targetPanel !== id) continue;
           action(
             id,
-            `${index === 0 ? "Primary" : `↳ Retry ${index}`} · ${compactModelLabel(target)}`,
+            `${index === 0 ? "Default" : `↳ Fallback ${index}`} · ${compactModelLabel(target)}`,
             () => {
               targetPanel = id;
               activeId = `${id}:earlier`;
@@ -742,7 +744,7 @@ export function createEditableProfileInspector(
             true,
           );
           Object.assign(result.at(-1)!, {
-            label: index === 0 ? "Primary" : `↳ Retry ${index}`,
+            label: index === 0 ? "Default" : `↳ Fallback ${index}`,
             value: compactModelLabel(target),
             model: target,
             help: `Exact: ${target.provider}/${target.id} · ${target.effort}. Enter opens this target’s controls.`,
@@ -824,7 +826,7 @@ export function createEditableProfileInspector(
           );
           action(
             "disable-chain",
-            "Disable chain → Advanced default / parent route (may be denied)",
+            "Disable chain → unchained model / parent route (may be denied)",
             () => send({ ...identity(), field: "fallback", action: "disable" }),
             !chain.length ? "Already unchained" : undefined,
           );
@@ -856,6 +858,12 @@ export function createEditableProfileInspector(
       if (panel === "advanced") {
         heading("Advanced", "advanced");
         for (const field of ["model", "prewalk"] as const) {
+          if (field === "model" && profile.fallback) {
+            info(
+              "Default is the first entry in Models. Unchained routing remains in source diagnostics.",
+            );
+            continue;
+          }
           info(
             `${field}: ${profile[field] ? modelLabel(profile[field]!) : field === "model" ? "selected parent model" : "not configured"} · ${fieldState(field)}`,
           );
