@@ -33,7 +33,9 @@ import {
   type ProfilePanelTheme,
 } from "./profile-presentation.ts";
 import { safe } from "./thread.ts";
-import { EFFORTS, modelSelection, sameSelection, type ModelSelection } from "./model-policy.ts";
+import { sameSelection, type ModelSelection } from "./model-policy.ts";
+import { profileModelLabel, type ProfileModelSource } from "./profile-model-catalog.ts";
+import { pickProfileModel } from "./profile-model-picker.ts";
 
 export type ProfileEditorView = {
   title: string;
@@ -41,7 +43,7 @@ export type ProfileEditorView = {
   choices: readonly { value: string; label: string }[];
 };
 export type ProfileEditorOptions = ProfileDraftOptions & {
-  modelStatus?: (selection: ModelSelection) => string;
+  modelCatalog?: ProfileModelSource;
 };
 type Show = (view: ProfileEditorView) => Promise<string | undefined>;
 type ScreenKeys = Pick<KeybindingsManager, "matches" | "getKeys">;
@@ -572,29 +574,6 @@ function authorityProfile(
 }
 const selectionLabel = (selection: ModelSelection) =>
   `${selection.provider}/${selection.id}:${selection.effort}`;
-async function exactSelection(
-  ctx: Pick<ExtensionCommandContext, "ui">,
-  show: Show,
-): Promise<ModelSelection | undefined> {
-  const provider = await ctx.ui.input("Exact physical model provider (no aliases or trimming)");
-  if (provider === undefined) return;
-  const id = await ctx.ui.input("Exact model id (no aliases or trimming)");
-  if (id === undefined) return;
-  const effort = await show({
-    title: "Exact model effort",
-    lines: [
-      `Provider: ${provider}`,
-      `Model id: ${id}`,
-      "No provider request or auth operation. Availability and supported effort are checked at admission.",
-    ],
-    choices: [
-      { value: "back", label: "Back without adding" },
-      ...EFFORTS.map((value) => ({ value, label: value })),
-    ],
-  });
-  if (!effort || effort === "back") return;
-  return modelSelection({ provider, id, effort });
-}
 async function modelField(
   ctx: Pick<ExtensionCommandContext, "ui">,
   show: Show,
@@ -607,8 +586,27 @@ async function modelField(
   const raw = rawRole(draft.value, name);
   const grants = (currentField(draft, name, "models", options) ?? []) as ModelSelection[];
   const authorized = authorityProfile(draft, name, options);
+  const metadata = (() => {
+    try {
+      return options.modelCatalog?.();
+    } catch {
+      return undefined;
+    }
+  })();
   const label = (value: ModelSelection) =>
-    `${selectionLabel(value)} · ${options.modelStatus?.(value) ?? "availability unknown; checked at admission"}`;
+    metadata
+      ? `${profileModelLabel(metadata, value)} · ${selectionLabel(value)}`
+      : `${selectionLabel(value)} · metadata unavailable; saved selection retained`;
+  const pick = (allowed?: readonly ModelSelection[], excluded?: readonly ModelSelection[]) =>
+    pickProfileModel(ctx, options.modelCatalog, {
+      title: `${name} · ${fieldLabels[field]}`,
+      context: [
+        `${draft.destination === "global" ? "Global · affects other workspaces" : "Project · operator authority only"}: ${draft.path}`,
+        "Selection stages a draft; explicit Save still required",
+      ],
+      allowed,
+      excluded,
+    });
   if (field === "model" || field === "prewalk") {
     const eligible =
       field === "prewalk" && draft.destination === "project"
@@ -620,17 +618,22 @@ async function modelField(
         ...notes,
         "Eligible exact selections come from the model allowlist. No implicit grants, aliases or effort coercion.",
         "Fallback and prewalk cannot coexist. Make related changes explicitly; temporary invalid drafts remain editable.",
+        ...(currentField(draft, name, field, options)
+          ? [`Current: ${label(currentField(draft, name, field, options) as ModelSelection)}`]
+          : []),
         ...eligible.map(label),
       ],
       choices: [
         { value: "back", label: "Back without changes" },
         { value: "reset", label: "Reset selected-layer setting" },
-        ...eligible.map((item, i) => ({ value: String(i), label: label(item) })),
+        { value: "choose", label: "Browse accessible models / choose effort" },
       ],
     });
     if (action === "reset") delete raw[field];
-    else if (action !== undefined && action !== "back")
-      editRole(draft, name)[field] = eligible[Number(action)];
+    else if (action === "choose") {
+      const selected = await pick(eligible);
+      if (selected) editRole(draft, name)[field] = selected;
+    }
     return;
   }
   const fallback = field === "fallback";
@@ -685,7 +688,7 @@ async function modelField(
     }
     if (action === "add") {
       let value: ModelSelection | undefined;
-      if (!fallback && draft.destination === "global") value = await exactSelection(ctx, show);
+      if (!fallback && draft.destination === "global") value = await pick(undefined, values);
       else {
         const choices = fallback
           ? draft.destination === "project"
@@ -694,18 +697,7 @@ async function modelField(
               )
             : grants
           : (authorized?.models ?? []);
-        const selected = await show({
-          title: "Choose exact authorized model",
-          lines: [
-            "Choose an existing exact grant. Projects cannot mint model/prewalk/fallback authority.",
-            ...choices.map(label),
-          ],
-          choices: [
-            { value: "back", label: "Back without adding" },
-            ...choices.map((item, i) => ({ value: String(i), label: label(item) })),
-          ],
-        });
-        if (selected !== undefined && selected !== "back") value = choices[Number(selected)];
+        value = await pick(choices, values);
       }
       if (value) values.push(value);
     } else {

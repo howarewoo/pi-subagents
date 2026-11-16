@@ -47,7 +47,10 @@ function bounds(lines: string[], width: number, height: number) {
   assert.ok(lines.length <= height, `${lines.length} > ${height}`);
   for (const line of lines) {
     assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}: ${line}`);
-    assert.doesNotMatch(stripAnsi(line), /\x1b|\n|\r/);
+    assert.doesNotMatch(
+      stripAnsi(line.replaceAll("\x1b_pi:fc\x07", "").replaceAll("\x1b_pi:/fc\x07", "")),
+      /\x1b|\n|\r/,
+    );
   }
 }
 function allDetails(component: Component, width = 100): string {
@@ -160,7 +163,8 @@ function dialogs(
           const initial = component.render(100);
           bounds(initial, 100, 27);
           assert.match(initial.join("\n"), step.title);
-          const detail = allDetails(component);
+          const isCatalog = initial.join("\n").includes("Search:");
+          const detail = isCatalog ? stripAnsi(initial.join("\n")) : allDetails(component);
           await step.inspect?.(component, detail);
           if (Array.isArray(step.input))
             for (const input of step.input) component.handleInput?.(input);
@@ -611,7 +615,7 @@ test("structured exact rows repair an invalid reset and interdependent prewalk/f
   const a = { provider: "synthetic", id: "exact", effort: "off" };
   await fs.writeFile(f.globalPath, JSON.stringify({ general: { models: [a] } }));
   await fs.writeFile(f.projectPath, JSON.stringify({ general: { models: [a] } }));
-  const select = { choice: "synthetic/exact:off · unavailable metadata (fixture)" };
+  const pick = ["\r", "\r", "\x1b[C", "\r", "\r"];
   const d = dialogs(
     [
       { title: /Subagent Profiles/, input: ["e"] },
@@ -625,13 +629,14 @@ test("structured exact rows repair an invalid reset and interdependent prewalk/f
       { title: /Exact model allowlist/, input: { choice: "Explicit empty grant []" } },
       { title: /Edit general/, input: { choice: "Exact model allowlist" } },
       { title: /Exact model allowlist/, input: { choice: "Add exact model grant" } },
-      { title: /Exact model effort/, input: { choice: "off" } },
+      { title: /general · Exact model allowlist/, input: pick },
       { title: /Exact model allowlist/, input: { choice: "Apply exact model grants" } },
       { title: /Edit general.*clean/, input: { choice: "Prewalk target" } },
-      { title: /Prewalk target/, input: select },
+      { title: /Prewalk target/, input: { choice: "Browse accessible models / choose effort" } },
+      { title: /general · Prewalk target/, input: pick },
       { title: /Edit general/, input: { choice: "Ordered fallback chain" } },
       { title: /Ordered fallback chain/, input: { choice: "Append granted exact target" } },
-      { title: /Choose exact authorized model/, input: select },
+      { title: /general · Ordered fallback chain/, input: pick },
       { title: /Ordered fallback chain/, input: { choice: "Apply ordered chain" } },
       {
         title: /Edit general/,
@@ -646,17 +651,28 @@ test("structured exact rows repair an invalid reset and interdependent prewalk/f
       },
       { title: /Prewalk target/, input: { choice: "Reset selected-layer setting" } },
       { title: /Edit general/, input: { choice: "Default model" } },
-      { title: /Default model/, input: select },
+      { title: /Default model/, input: { choice: "Browse accessible models / choose effort" } },
+      { title: /general · Default model/, input: pick },
       { title: /Edit general/, input: { choice: "Review / Save" } },
       { title: /Review profile save/, input: { choice: "Save this file" } },
       { title: /Edit general.*clean/, input: ["\x1b"] },
       { title: /Subagent Profiles/, input: ["\x1b"] },
     ],
-    { inputs: ["synthetic", "exact"] },
+    {},
   );
   await runProfileEditor(d.context, {
     ...f.options,
-    modelStatus: () => "unavailable metadata (fixture)",
+    modelCatalog: () => ({
+      entries: [
+        {
+          provider: "synthetic",
+          id: "exact",
+          name: "Friendly exact",
+          providerLabel: "Synthetic custom",
+          efforts: [{ effort: "off" }],
+        },
+      ],
+    }),
   });
   d.assertFinished();
   assert.deepEqual(JSON.parse(await fs.readFile(f.globalPath, "utf8")), {
@@ -1237,4 +1253,38 @@ test("editor destination, review and recovery surfaces share full neutral row pa
       }
     }
   }
+});
+
+test("unavailable saved model rows remain warning/removable rows and do not block unrelated explicit saves", async (t) => {
+  const f = await files(t);
+  const selection = { provider: "unavailable-provider", id: "saved-model", effort: "high" };
+  const original = { general: { models: [selection], fallback: [selection] } };
+  await fs.writeFile(f.globalPath, JSON.stringify(original));
+  await fs.writeFile(f.projectPath, "{}");
+  const d = dialogs(
+    [
+      { title: /Subagent Profiles/, input: ["e"] },
+      { title: /Choose write destination/, input: choose(1) },
+      { title: /Edit general/, input: { choice: "Ordered fallback chain" } },
+      {
+        title: /Ordered fallback chain/,
+        input: { choice: "Back without changes" },
+        inspect: (_c, text) => assert.match(text, /Warning:.*Saved entries retained/),
+      },
+      { title: /Edit general/, input: { choice: "Edit description" } },
+      { title: /Edit general/, input: { choice: "Review / Save" } },
+      { title: /Review profile save/, input: { choice: "Save this file" } },
+      { title: /Edit general.*clean/, input: ["\x1b"] },
+      { title: /Subagent Profiles/, input: ["\x1b"] },
+    ],
+    { description: "Unrelated edit while metadata is unavailable" },
+  );
+  await runProfileEditor(d.context, {
+    ...f.options,
+    modelCatalog: () => ({ entries: [], error: "Saved entries retained; metadata unavailable" }),
+  });
+  d.assertFinished();
+  assert.deepEqual(JSON.parse(await fs.readFile(f.globalPath, "utf8")), {
+    general: { ...original.general, description: "Unrelated edit while metadata is unavailable" },
+  });
 });
