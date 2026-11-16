@@ -85,11 +85,11 @@ function details(profile: Profile, panel: ProfileSetting): DetailLine[] {
   if (panel === "route")
     return [
       heading("Models"),
-      value("Fallback chain (routing, not grants)"),
+      value("Default and ordered fallbacks (routing, not grants)"),
       ...(profile.fallback?.length
         ? profile.fallback.map((target, index) =>
             value(
-              `${index === 0 ? "Primary" : `  ↳ Retry ${index}`}: ${target.provider}/${target.id} · ${target.effort}`,
+              `${index === 0 ? "Default" : `  ↳ Fallback ${index}`}: ${target.provider}/${target.id} · ${target.effort}`,
             ),
           )
         : [
@@ -132,10 +132,15 @@ function details(profile: Profile, panel: ProfileSetting): DetailLine[] {
     ];
   return [
     heading("Advanced · model policy"),
-    ...structured(
-      profile.fallback ? "Model default (unchained)" : "Model default",
-      profile.model ?? "selected parent model",
-    ),
+    ...(profile.fallback
+      ? [
+          value("Default is the first entry in Models."),
+          ...structured(
+            "Unchained route (only when chaining is bypassed/disabled)",
+            profile.model ?? "selected parent model",
+          ),
+        ]
+      : structured("Model default", profile.model ?? "selected parent model")),
     ...structured("Models grant", profile.models ?? "no explicit override grant"),
     ...structured("Prewalk", profile.prewalk ?? "off"),
     ...Object.entries(profile)

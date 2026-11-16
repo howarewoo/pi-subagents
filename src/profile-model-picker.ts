@@ -15,6 +15,7 @@ import type { ModelSelection } from "./model-policy.ts";
 import {
   filterProfileModels,
   profileModelPickReason,
+  type ProfileModelEntry,
   type ProfileModelCatalog,
   type ProfileModelPickOptions,
   type ProfileModelSource,
@@ -56,7 +57,18 @@ export function createProfileModelPicker(
   let detailOffset = 0;
   let detailMaximum = 0;
   let detailViewport = 1;
-  const rows = () => filterProfileModels(catalog, input.getValue(), provider);
+  let notice = "";
+  const matches = () => filterProfileModels(catalog, input.getValue(), provider);
+  const eligible = (entry: ProfileModelEntry) =>
+    entry.efforts.some(
+      ({ effort }) =>
+        !profileModelPickReason(
+          catalog,
+          { provider: entry.provider, id: entry.id, effort },
+          options,
+        ),
+    );
+  const rows = () => matches().filter(eligible);
   const selection = (): ModelSelection | undefined => {
     const entry = rows()[selected];
     return entry && effort ? { provider: entry.provider, id: entry.id, effort } : undefined;
@@ -70,6 +82,7 @@ export function createProfileModelPicker(
   const reset = () => {
     selected = 0;
     effort = undefined;
+    notice = "";
   };
   return {
     capturesViewportInput: true,
@@ -98,8 +111,13 @@ export function createProfileModelPicker(
         const label = colon >= 0 ? text.slice(0, colon + 1) : text;
         return `${focuses[focus] === name && focused ? "›" : " "} ${theme.style(label, { fg: focuses[focus] === name ? "accent" : "text", bold: true })}${text.slice(label.length)}`;
       };
+      const disabledReason = reason();
       const reasonLines = wrapTextWithAnsi(
-        safe(reason() ?? "Accessible in this session; profile authorization remains separate."),
+        safe(
+          notice ||
+            disabledReason ||
+            "Accessible in this session; profile authorization remains separate.",
+        ),
         width,
       );
       const contextLines = options.context.flatMap((line) => wrapTextWithAnsi(safe(line), width));
@@ -119,7 +137,7 @@ export function createProfileModelPicker(
           ) ?? ["None"]),
           "",
           `Selected effort: ${effort ?? "not chosen"}`,
-          reason() ?? "Accessible in this session; profile authorization remains separate.",
+          disabledReason ?? "Accessible in this session; profile authorization remains separate.",
           "",
           "Metadata Refresh rereads the host snapshot only; no network refresh.",
         ].flatMap((line) => wrapTextWithAnsi(safe(line), width));
@@ -144,7 +162,34 @@ export function createProfileModelPicker(
         "",
         active("models", `Models: ${list.length} matches · ↑/↓ browse`),
       ];
+      const hidden = matches().filter((item) => !eligible(item));
+      const hiddenReasons = new Set(
+        hidden.flatMap((item) =>
+          item.efforts.length
+            ? item.efforts.map(({ effort }) => {
+                const why = profileModelPickReason(
+                  catalog,
+                  { provider: item.provider, id: item.id, effort },
+                  options,
+                );
+                return why?.includes("scope")
+                  ? "session scope"
+                  : why?.startsWith("Not authorized")
+                    ? "exact grants"
+                    : why === "Exact selection already present"
+                      ? "already present"
+                      : "unavailable metadata/access";
+              })
+            : ["no supported efforts"],
+        ),
+      );
       const suffix = [
+        ...(hidden.length
+          ? wrapTextWithAnsi(
+              `${hidden.length} model${hidden.length === 1 ? "" : "s"} hidden: ${[...hiddenReasons].join(", ")}.`,
+              width,
+            ).map((line) => theme.fg("muted", line))
+          : []),
         "",
         ...wrapTextWithAnsi(
           active(
@@ -153,20 +198,33 @@ export function createProfileModelPicker(
           ),
           width,
         ),
-        ...reasonLines.map((line) => theme.fg(reason() ? "warning" : "muted", line)),
+        ...reasonLines.map((line) =>
+          theme.fg(notice || disabledReason ? "warning" : "muted", line),
+        ),
         "",
         ...wrapTextWithAnsi(
           active(
             "add",
-            reason()
+            disabledReason
               ? "Select [disabled]"
               : `${options.selectionLabel ?? "Select (no automatic grants)"} · ${effort}`,
           ),
           width,
         ),
         active("refresh", "Refresh metadata · host snapshot only, no network refresh"),
-        theme.fg("muted", `Tab: focus · Enter: choose · F1: details · ${cancel}: back`),
+        theme.fg(
+          "muted",
+          `↑↓: browse · Tab: focus · Enter: choose · F1: details · ${cancel}: back`,
+        ),
       ];
+      // Reclaim spacers before hiding otherwise usable results in a short overlay.
+      for (const block of [suffix, prefix]) {
+        while (prefix.length + suffix.length >= height) {
+          const spacer = block.lastIndexOf("");
+          if (spacer < 0) break;
+          block.splice(spacer, 1);
+        }
+      }
       const fixedHeight = prefix.length + suffix.length;
       if (height <= fixedHeight) {
         compact = true;
@@ -178,31 +236,25 @@ export function createProfileModelPicker(
         Math.min(selected - Math.floor(resultHeight / 2), list.length - resultHeight),
       );
       const results = list.slice(start, start + resultHeight).map((item, index) => {
-        const allDisabled = item.efforts.every((e) =>
-          profileModelPickReason(
-            catalog,
-            { provider: item.provider, id: item.id, effort: e.effort },
-            options,
-          ),
-        );
         const selectedRow = start + index === selected;
-        const warning = allDisabled ? " [disabled]" : "";
-        const name = truncateToWidth(safe(item.name), Math.max(1, width - 2 - warning.length));
-        const providerRoom = Math.max(0, width - 2 - visibleWidth(name) - warning.length - 3);
+        const name = truncateToWidth(safe(item.name), Math.max(1, width - 2));
+        const providerRoom = Math.max(0, width - 2 - visibleWidth(name) - 3);
         const providerText =
           providerRoom >= 8
             ? ` · ${theme.fg("muted", truncateToWidth(safe(item.providerLabel), providerRoom))}`
             : "";
-        return `${selectedRow && focus === 2 && focused ? "›" : " "} ${theme.fg(selectedRow ? "accent" : "text", name)}${providerText}${theme.fg("warning", warning)}`;
+        return `${selectedRow && focus === 2 && focused ? "›" : " "} ${theme.fg(selectedRow ? "accent" : "text", name)}${providerText}`;
       });
       if (!results.length)
         results.push(
           ...wrapTextWithAnsi(
             safe(
               catalog.error ??
-                (catalog.entries.length
-                  ? "No matching models. Change search/provider."
-                  : "No accessible physical models in host metadata."),
+                (hidden.length
+                  ? "All matching models are hidden. See reasons below."
+                  : catalog.entries.length
+                    ? "No matching models. Change search/provider."
+                    : "No accessible physical models in host metadata."),
             ),
             width,
           ).slice(0, resultHeight),
@@ -242,21 +294,24 @@ export function createProfileModelPicker(
         else return; // Metadata browsing must never activate the hidden selection action.
       } else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
         focus = (focus + (matchesKey(data, "shift+tab") ? focuses.length - 1 : 1)) % focuses.length;
+      } else if (
+        (focus === 0 || focus === 2) &&
+        (keys.matches(data, "tui.select.up") || keys.matches(data, "tui.select.down"))
+      ) {
+        if (focus === 2)
+          selected = Math.max(
+            0,
+            Math.min(rows().length - 1, selected + (keys.matches(data, "tui.select.up") ? -1 : 1)),
+          );
+        focus = 2;
+        effort = undefined;
+        notice = "";
       } else if (focus === 0) {
         if (keys.matches(data, "tui.select.confirm")) focus = 2;
         else {
           input.handleInput(data);
           reset();
         }
-      } else if (
-        focus === 2 &&
-        (keys.matches(data, "tui.select.up") || keys.matches(data, "tui.select.down"))
-      ) {
-        selected = Math.max(
-          0,
-          Math.min(rows().length - 1, selected + (keys.matches(data, "tui.select.up") ? -1 : 1)),
-        );
-        effort = undefined;
       } else if (
         (focus === 1 || focus === 3) &&
         (matchesKey(data, "left") || matchesKey(data, "right"))
@@ -271,6 +326,7 @@ export function createProfileModelPicker(
             ];
           reset();
         } else {
+          notice = "";
           const efforts = rows()[selected]?.efforts ?? [];
           const index = efforts.findIndex((item) => item.effort === effort);
           effort = efforts.length
@@ -290,11 +346,13 @@ export function createProfileModelPicker(
           // A second local snapshot closes stale eligibility without touching credentials or disk.
           const target = selection();
           refresh();
-          if (target && !profileModelPickReason(catalog, target, options)) {
+          const rejection = target && profileModelPickReason(catalog, target, options);
+          if (target && !rejection) {
             done(target);
             return;
           }
-          effort = undefined;
+          reset();
+          notice = rejection || "Selection is no longer available; choose again.";
         } else if (focus === 5) {
           refresh();
           if (!catalog.entries.some((item) => item.provider === provider)) provider = "";
