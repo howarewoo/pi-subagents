@@ -1,14 +1,16 @@
-import type { Skill, Theme } from "@earendil-works/pi-coding-agent";
+import type { Skill } from "@earendil-works/pi-coding-agent";
 import {
-  colorToOklch,
-  oklchColor,
   matchesKey,
-  truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
   type Component,
   type KeybindingsManager,
 } from "@earendil-works/pi-tui";
+import {
+  profileCell as cell,
+  profileRowPaint,
+  type ProfilePanelTheme,
+} from "./profile-presentation.ts";
 import { safe } from "./thread.ts";
 import { resolvedCatalogProfiles, type Profile, type ProfileCatalog } from "./profiles.ts";
 
@@ -62,13 +64,27 @@ function details(profile: Profile): DetailLine[] {
     return [value(`${indent}${label}: ${String(item)}`)];
   };
   return [
-    heading("Description"),
+    heading("Instructions"),
+    value("Description"),
     value(profile.description),
     value(""),
-    heading("Prompt"),
+    value("Prompt"),
     value(profile.prompt),
     value(""),
-    heading("Tools and permissions"),
+    heading("Model chain"),
+    ...(profile.fallback
+      ? [
+          value("Fallback chain (routing, not grants)"),
+          ...profile.fallback.map((target, index) =>
+            value(
+              `${index === 0 ? "Primary" : `Retry ${index}`}: ${target.provider}/${target.id} · ${target.effort}`,
+            ),
+          ),
+          value("Unavailable targets may be skipped; runtime admission still applies."),
+        ]
+      : [value("No chain · Advanced default / selected parent model route applies.")]),
+    value(""),
+    heading("Permissions"),
     value(`Tools ceiling: ${list(profile.tools)}`),
     value("Callable tools: unknown in command context; inspect admitted task tools."),
     ...(profile.name === "general"
@@ -84,19 +100,16 @@ function details(profile: Profile): DetailLine[] {
     value(`Spawn ceiling: ${list(profile.spawn)}`),
     value(`Coordination: ${list(profile.coordination)}`),
     value(""),
-    heading("Skills (exact paths)"),
+    value("Skills (exact paths)"),
     ...(profile.skills.length ? profile.skills.map(value) : [value("none")]),
     value(""),
-    heading("Model policy"),
+    heading("Advanced · model policy"),
     ...structured(
       profile.fallback ? "Model default (unchained)" : "Model default",
       profile.model ?? "selected parent model",
     ),
     ...structured("Models grant", profile.models ?? "no explicit override grant"),
     ...structured("Prewalk", profile.prewalk ?? "off"),
-    ...(profile.fallback
-      ? structured("Fallback chain (routing, not grants)", profile.fallback)
-      : []),
     ...Object.entries(profile)
       .filter(([key]) => !known.has(key))
       .map(([key, item]) => value(`${key}: ${JSON.stringify(item)}`)),
@@ -110,7 +123,7 @@ function details(profile: Profile): DetailLine[] {
 /** Read-only snapshot consumer; no fixed role count or policy defaults in the renderer. */
 export function createProfileViewer(
   profiles: readonly Profile[],
-  theme: Pick<Theme, "fg" | "style"> & { colors: Pick<Theme["colors"], "customMessageBg"> },
+  theme: ProfilePanelTheme,
   keys: Pick<KeybindingsManager, "matches" | "getKeys">,
   requestRender: () => void,
   done: () => void,
@@ -132,57 +145,70 @@ export function createProfileViewer(
   let offset = 0;
   let viewport = 1;
   let maximum = 0;
-  const cell = (text: string, width: number) => {
-    const clipped = truncateToWidth(text, width);
-    return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
-  };
+  let compact = true;
+  let focus: "profiles" | "settings" = "profiles";
+  let groupOffsets: number[] = [];
+  const scrollPositions = new Map<string, number>();
   return {
     capturesViewportInput: true,
     render(width) {
       width = Math.max(0, width);
       const height = Math.max(1, Math.floor(availableRows()));
       const close = keys.getKeys("tui.select.cancel").join("/") || "Esc";
-      const panelBg = oklchColor(colorToOklch(theme.colors.customMessageBg).l, 0, 0);
-      // Match the Hub: foreground helpers may reset both colors inside a painted line.
-      const paint = (text: string) => {
-        const padded = cell(text, width);
-        const restoreBg = theme.style("", { bg: panelBg }).replace("\x1b[49m", "");
-        return padded
-          .split("\x1b[0m")
-          .map((part) => theme.style(part.replaceAll("\x1b[49m", restoreBg), { bg: panelBg }))
-          .join("\x1b[0m");
-      };
+      const confirm = safe(keys.getKeys("tui.select.confirm").join("/") || "Enter");
+      const paint = profileRowPaint(theme, width);
       const fallback = () =>
         [`Profiles · ${safe(close)}: close`, "Resize for details"].slice(0, height).map(paint);
+      compact = true;
       if (width < 24) return fallback();
       const inner = width - 4;
       const wide = width >= 88;
       const leftWidth = wide ? Math.min(28, Math.floor(inner / 3)) : inner;
       const rightWidth = wide ? inner - leftWidth - 3 : inner;
       const footer = [
-        "↑↓ select · j/k scroll · PgUp/Dn · Home/End",
-        `${options.edit ? "Enter/e: edit · " : ""}${safe(close)}: close · callable tools unknown here`,
+        `Tab: ${focus} · ↑↓ ${focus === "profiles" ? "select" : "scroll"} · j/k scroll · PgUp/Dn · Home/End`,
+        "1 Instructions · 2 Chain · 3 Permissions · 4 Advanced",
+        `${options.edit ? `${confirm}/e: edit · ` : ""}${safe(close)}: close · callable tools unknown here`,
       ].flatMap((line) => wrapTextWithAnsi(line, inner));
       // Frames, divider and hints are reserved before assigning any viewport rows.
       const bodyHeight = height - 3 - footer.length;
-      const listHeight = wide ? bodyHeight : Math.min(3, Math.max(1, Math.floor(bodyHeight / 3)));
+      const listHeight = wide ? bodyHeight : 1;
       const detailHeight = wide ? bodyHeight : bodyHeight - listHeight - 1;
       if (detailHeight < 4) return fallback();
+      compact = false;
       viewport = detailHeight - 3;
-      const start = Math.max(0, selected - listHeight + 1);
-      const roster = profiles
-        .slice(start, start + listHeight)
-        .map((profile, index) =>
-          theme.fg(
-            start + index === selected ? "accent" : "text",
-            `${start + index === selected ? ">" : " "} ${safe(profile.name).replaceAll("\n", " ")}`,
-          ),
-        );
       const profile = profiles[selected];
       const name = profile ? safe(profile.name).replaceAll("\n", " ") : "No selection";
       const provenance = profile && options.catalog?.provenance[profile.name];
+      const roleRows = Math.max(1, listHeight - 6);
+      const start = Math.max(0, selected - roleRows + 1);
+      const roster = wide
+        ? [
+            theme.fg("muted", `Profiles · ${profiles.length}`),
+            ...profiles
+              .slice(start, start + roleRows)
+              .map((entry, index) =>
+                theme.fg(
+                  start + index === selected ? "accent" : "text",
+                  `${start + index === selected ? ">" : " "} ${safe(entry.name).replaceAll("\n", " ")}`,
+                ),
+              ),
+            "",
+            theme.fg("muted", `Source: ${provenance?.source ?? "resolved"}`),
+            theme.fg("muted", options.trusted ? "Trusted project" : "Project ignored: untrusted"),
+            theme.fg("muted", "Callable tools: unknown"),
+          ]
+        : [
+            theme.fg(
+              "accent",
+              `Profiles ${profiles.length ? selected + 1 : 0}/${profiles.length} · > ${name}`,
+            ),
+          ];
       const content = profile
         ? [
+            ...details(profile),
+            { text: "" },
+            { text: "Advanced · source and security", heading: true },
             ...(provenance
               ? [
                   {
@@ -213,26 +239,30 @@ export function createProfileViewer(
                   { text: "" },
                 ]
               : []),
-            ...details(profile),
           ]
         : [{ text: "No resolved profiles" }];
       // A clipped pinned name still has a complete, scrollable representation.
       if (profile && (visibleWidth(name) > rightWidth || profile.name.includes("\n")))
         content.unshift({ text: profile.name });
-      const lines = content.flatMap(({ text, heading }) =>
-        safe(text)
+      groupOffsets = [];
+      let lineCount = 0;
+      const lines = content.flatMap(({ text, heading }) => {
+        if (heading && groupOffsets.length < 4) groupOffsets.push(lineCount);
+        const wrappedLines = safe(text)
           .split("\n")
           .flatMap((line) =>
             wrapTextWithAnsi(line, rightWidth).map((wrapped) =>
               theme.fg(heading ? "accent" : "text", wrapped),
             ),
-          ),
-      );
+          );
+        lineCount += wrappedLines.length;
+        return wrappedLines;
+      });
       maximum = Math.max(0, lines.length - viewport);
       offset = Math.min(maximum, offset);
       const detail = [
         theme.fg("accent", name),
-        theme.fg("muted", "resolved · read-only"),
+        theme.fg("muted", `resolved · read-only · ${provenance?.source ?? "snapshot"}`),
         ...lines.slice(offset, offset + viewport),
         ...Array(Math.max(0, viewport - (lines.length - offset))).fill(""),
         theme.fg(
@@ -275,17 +305,31 @@ export function createProfileViewer(
         done();
         return;
       }
+      if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+        focus = focus === "profiles" ? "settings" : "profiles";
+        requestRender();
+        return;
+      }
+      if (/^[1-4]$/.test(data)) {
+        offset = Math.min(maximum, groupOffsets[Number(data) - 1] ?? 0);
+        focus = "settings";
+        requestRender();
+        return;
+      }
       if (options.edit && (data === "e" || keys.matches(data, "tui.select.confirm"))) {
+        if (compact) return;
         const profile = profiles[selected];
         if (profile) options.edit(profile.name);
         return;
       }
       if (keys.matches(data, "tui.select.up") || keys.matches(data, "tui.select.down")) {
-        selected = Math.max(
-          0,
-          Math.min(profiles.length - 1, selected + (keys.matches(data, "tui.select.up") ? -1 : 1)),
-        );
-        offset = 0;
+        const delta = keys.matches(data, "tui.select.up") ? -1 : 1;
+        if (focus === "settings") offset = Math.max(0, Math.min(maximum, offset + delta));
+        else {
+          if (profiles[selected]) scrollPositions.set(profiles[selected].name, offset);
+          selected = Math.max(0, Math.min(profiles.length - 1, selected + delta));
+          offset = scrollPositions.get(profiles[selected]?.name ?? "") ?? 0;
+        }
       } else if (data === "j") offset = Math.min(maximum, offset + 1);
       else if (data === "k") offset = Math.max(0, offset - 1);
       else if (keys.matches(data, "tui.select.pageDown"))

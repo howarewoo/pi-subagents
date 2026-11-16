@@ -175,7 +175,7 @@ test("viewer selects arbitrary roles, scrolls complete sanitized details, stacks
     () => rows,
   );
   const render = (width: number) => viewer.render(width).join("\n");
-  assert.match(render(120), /general.*│.*general/);
+  assert.match(render(120), /Profiles · 5.*│.*general/);
   const generalDetails = scrollThrough(viewer, 120);
   assert.match(generalDetails, /Tools ceiling:.*write, edit, bash/);
   assert.match(generalDetails, /Inheritance: available parent skills and callable builtins/);
@@ -286,8 +286,8 @@ test("wrapped content, skills, structured policies and extra fields remain compl
     for (const token of [...tokens, "last-prompt-marker", "description-marker", "extra-marker"])
       assert.ok(unwrapped.includes(token), `missing ${token} at ${width}`);
     for (const label of [
-      "Tools and permissions",
-      "Model policy",
+      "Permissions",
+      "Advanced · model policy",
       "Model default:",
       "Models grant:",
       "Prewalk:",
@@ -384,7 +384,7 @@ test("theme-derived neutral paint covers frames, padding and ANSI resets and ref
     }
   }
   assert.ok(calls.some(({ color, text }) => color === "accent" && text === "> general"));
-  assert.ok(calls.some(({ color, text }) => color === "accent" && text === "Description"));
+  assert.ok(calls.some(({ color, text }) => color === "accent" && text === "Instructions"));
   assert.ok(calls.some(({ color, text }) => color === "border" && text.includes("┤")));
   palette.colors.customMessageBg = oklchColor(0.9, 0.1, 330);
   viewer.invalidate();
@@ -466,4 +466,46 @@ test("configured fallback chains are visible separately from unordered model gra
     assert.match(output, /backup-chain-marker/);
     assert.match(output, /Modeldefault\(unchained\)/);
   }
+});
+
+test("Inspector focus and group jumps retain the selected role through stacked and tiny layouts", () => {
+  let rows = 24;
+  const edited: string[] = [];
+  const viewer = createProfileViewer(
+    bundledProfiles(),
+    theme,
+    keys,
+    () => {},
+    () => {},
+    () => rows,
+    { edit: (name) => edited.push(name) },
+  );
+  viewer.render(120);
+  viewer.handleInput!("2");
+  assert.match(viewer.render(120).join("\n"), /Model chain/);
+  assert.match(viewer.render(120).join("\n"), /Tab: settings/);
+  viewer.handleInput!("down");
+  assert.match(viewer.render(52).join("\n"), /Profiles 1\/4 · > general/);
+  viewer.handleInput!("\t");
+  viewer.handleInput!("down");
+  assert.match(viewer.render(52).join("\n"), /Profiles 2\/4 · > scout/);
+  viewer.handleInput!("4");
+  const advanced = viewer.render(120).join("\n");
+  assert.match(advanced, /Advanced · model policy/);
+  viewer.handleInput!("\t");
+  viewer.handleInput!("up");
+  viewer.render(120);
+  viewer.handleInput!("down");
+  assert.equal(
+    viewer.render(120).join("\n"),
+    advanced.replace("Tab: settings", "Tab: profiles").replace("↑↓ scroll", "↑↓ select"),
+  );
+  rows = 6;
+  assert.match(viewer.render(20).join("\n"), /Profiles/);
+  viewer.handleInput!("e");
+  assert.deepEqual(edited, [], "hidden editing destination cannot activate");
+  rows = 24;
+  viewer.render(80);
+  viewer.handleInput!("e");
+  assert.deepEqual(edited, ["scout"]);
 });

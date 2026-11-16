@@ -4,8 +4,14 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
-import { visibleWidth, oklchColor, type Component } from "@earendil-works/pi-tui";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  visibleWidth,
+  oklchColor,
+  styleText,
+  backgroundAnsi,
+  type Component,
+} from "@earendil-works/pi-tui";
+import type { ExtensionCommandContext, ThemeStyle } from "@earendil-works/pi-coding-agent";
 import {
   createProfileEditorScreen,
   runProfileEditor,
@@ -1190,4 +1196,45 @@ test("copying a registered local definition strips resolver authority metadata a
   ])
     assert.equal(copied[field], undefined);
   assert.deepEqual(copied.spawn, []);
+});
+
+test("editor destination, review and recovery surfaces share full neutral row paint including nested resets", () => {
+  const palette = {
+    colors: { customMessageBg: oklchColor(0.3, 0.15, 330) },
+    fg: (_color: string, text: string) => `\x1b[31m${text}\x1b[0m\x1b[49m`,
+    style: (text: string, { bg }: ThemeStyle) => {
+      assert.ok(bg && typeof bg !== "string");
+      return styleText(text, { bg }, "truecolor");
+    },
+  };
+  let rows = 24;
+  for (const title of ["Choose write destination", "Review profile changes", "Save failed"]) {
+    const screen = createProfileEditorScreen(
+      {
+        title,
+        lines: ["/synthetic/delegation.json", "Long warning ".repeat(20)],
+        choices: [{ value: "back", label: "Back" }],
+      },
+      palette,
+      keys,
+      () => {},
+      () => {},
+      () => rows,
+    );
+    for (const lightness of [0.3, 0.9]) {
+      palette.colors.customMessageBg = oklchColor(lightness, 0.15, 330);
+      screen.invalidate();
+      for (const width of [0, 1, 20, 24, 52, 80, 100, 120]) {
+        for (rows of [1, 6, 12, 24]) {
+          const lines = screen.render(width);
+          bounds(lines, width, rows);
+          for (const line of lines) {
+            assert.equal(visibleWidth(line), width);
+            assert.ok(line.startsWith(backgroundAnsi(oklchColor(lightness, 0, 0), "truecolor")));
+            assert.doesNotMatch(line, /\x1b\[49m(?!\x1b\[0m|$)/);
+          }
+        }
+      }
+    }
+  }
 });
