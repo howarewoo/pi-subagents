@@ -2,6 +2,7 @@ import {
   Editor,
   Input,
   matchesKey,
+  truncateToWidth,
   wrapTextWithAnsi,
   type Component,
   type Focusable,
@@ -14,7 +15,6 @@ import {
   WRITE_TOOLS,
   COORDINATION_ACTIONS,
   type Profile,
-  type ProfileCatalog,
 } from "./profiles.ts";
 import {
   ProfileAutosaveController,
@@ -25,6 +25,7 @@ import {
 import { type ModelSelection } from "./model-policy.ts";
 import {
   profileModelLabel,
+  profileModelReason,
   type ProfileModelCatalog,
   type ProfileModelSource,
 } from "./profile-model-catalog.ts";
@@ -32,8 +33,17 @@ import { createProfileModelPicker } from "./profile-model-picker.ts";
 import {
   profileCell as cell,
   profileRowPaint,
+  profileSettingLines,
   type ProfilePanelTheme,
 } from "./profile-presentation.ts";
+import {
+  profileOverview,
+  profileSettingLabels,
+  profileSettingHelp,
+  profileRawRole as rawRole,
+  profileSettingFields,
+  type ProfileSetting,
+} from "./profile-overview.ts";
 import { safe } from "./thread.ts";
 import { isAbsolute } from "node:path";
 
@@ -47,25 +57,24 @@ export type StructuralAction =
 export type InspectorExit =
   | { profile: string; action: "destination" | StructuralAction }
   | undefined;
-type Row = { id: string; text: string; run?: () => void; reason?: string; heading?: boolean };
+type Row = {
+  id: string;
+  text: string;
+  run?: () => void;
+  reason?: string;
+  heading?: boolean;
+  label?: string;
+  value?: string;
+  model?: ModelSelection;
+  help?: string;
+  metadata?: string;
+  warning?: string;
+};
 const bundled = new Set(bundledProfiles().map((p) => p.name));
 const exact = (target: ModelSelection) =>
   JSON.stringify([target.provider, target.id, target.effort]);
 const format = (value: unknown) =>
   value === undefined ? "unset / inherited" : JSON.stringify(value);
-function rawRole(
-  catalog: ProfileCatalog,
-  destination: "global" | "project",
-  name: string,
-): Record<string, unknown> {
-  const layer = catalog[destination];
-  return ((bundled.has(name)
-    ? layer[name]
-    : (layer.customProfiles as Record<string, unknown> | undefined)?.[name]) ?? {}) as Record<
-    string,
-    unknown
-  >;
-}
 
 /** Persistent rail and grouped pane. Native input, multiline editor and catalog are composed inside
  * the same painted surface; only drained structural transactions leave this component. */
@@ -98,6 +107,31 @@ export function createEditableProfileInspector(
   let notice = "";
   let listField: Exclude<OrdinaryProfileField, "description" | "prompt"> | "models" | undefined;
   let diagnostic = false;
+  let panel: ProfileSetting | undefined;
+  let targetPanel: string | undefined;
+  let panelReturn = "description";
+  const back = () => {
+    if (listField) {
+      const field = listField;
+      listField = undefined;
+      if (field === "tools" || field === "skills" || field === "leafTools") {
+        panel = undefined;
+        activeId = field;
+        offset = 0;
+        follow = true;
+        return;
+      }
+      activeId = field === "models" ? "models" : `list:${field}`;
+    } else if (targetPanel) {
+      activeId = targetPanel;
+      targetPanel = undefined;
+    } else {
+      panel = undefined;
+      activeId = panelReturn;
+    }
+    offset = 0;
+    follow = true;
+  };
   let child: (Component & Focusable) | undefined;
   let childHeight = 14;
   let textError = "";
@@ -109,7 +143,17 @@ export function createEditableProfileInspector(
         original: string;
       }
     | undefined;
-  const positions = new Map<string, { id: string; offset: number }>();
+  const positions = new Map<
+    string,
+    {
+      id: string;
+      offset: number;
+      panel?: ProfileSetting;
+      listField?: typeof listField;
+      targetPanel?: string;
+      panelReturn: string;
+    }
+  >();
   const catalog = () => controller.projected;
   const destination = controller.destination;
   const selected = (): Profile | undefined => {
@@ -133,6 +177,17 @@ export function createEditableProfileInspector(
     }
   };
   const modelLabel = (target: ModelSelection) => profileModelLabel(metadata(), target);
+  const compactModelLabel = (target: ModelSelection, styled = false) => {
+    const snapshot = metadata();
+    const entry = snapshot.entries.find(
+      (e) => e.provider === target.provider && e.id === target.id,
+    );
+    const reason = profileModelReason(snapshot, target);
+    const label = truncateToWidth(safe(entry?.name ?? target.id), 40);
+    const provider = truncateToWidth(safe(entry?.providerLabel ?? target.provider), 22);
+    const warning = reason ? ` · ${reason.includes("scope") ? "Restricted" : "Unavailable"}` : "";
+    return `${label} · ${styled ? theme.fg("muted", provider) : provider} · ${target.effort}${styled ? theme.fg("warning", warning) : warning}`;
+  };
   const mutable = () =>
     ["saved", "saving"].includes(controller.status) &&
     (destination !== "project" || options.isProjectTrusted()) &&
@@ -295,7 +350,8 @@ export function createEditableProfileInspector(
         leaveChild();
         if (!selection) return;
         if (action === "replace-target" && target) {
-          activeId = `chain:${exact(selection)}`;
+          targetPanel = `chain:${exact(selection)}`;
+          activeId = targetPanel;
           send({ ...origin, field: "fallback", action, target, replacement: selection });
         } else if (field === "fallback" && (action === "add" || action === "switch-from-prewalk")) {
           activeId = `chain:${exact(selection)}`;
@@ -341,11 +397,49 @@ export function createEditableProfileInspector(
     const result: Row[] = [];
     const info = (text: string, id = `info:${result.length}`) => result.push({ id, text });
     const heading = (text: string, id: string) => result.push({ id, text, heading: true });
-    const action = (id: string, text: string, run: () => void, reason?: string, recovery = false) =>
+    const action = (
+      id: string,
+      text: string,
+      run: () => void,
+      reason?: string,
+      recovery = false,
+    ) => {
+      let warning: string | undefined;
+      if (id.startsWith("reset:") || id === "reset-list" || id === "reset-chain") {
+        const field =
+          id === "reset-list" ? listField! : id === "reset-chain" ? "fallback" : id.slice(6);
+        try {
+          const inherited = structuredClone(current);
+          delete rawRole(inherited, destination, name)[field];
+          const resolved = resolveProfileCatalog(
+            inherited.global,
+            destination === "project" ? inherited.project : {},
+            options.availableSkills ?? [],
+          ).profiles.find((p) => p.name === name);
+          const value = resolved?.[field as keyof Profile];
+          const inheritedValue =
+            field === "description" || field === "prompt"
+              ? `${destination === "global" ? "bundled" : "operator / bundled"} ${field} (full text in Advanced source details)`
+              : Array.isArray(value)
+                ? `${value.length} inherited ${field === "fallback" ? "ordered targets" : "ceiling entries"}${field === "fallback" && value[0] ? `; primary ${compactModelLabel(value[0] as ModelSelection)}` : ""}`
+                : format(value);
+          warning = `Reset removes this layer's ${field}; inherits ${inheritedValue}. Other fields are unchanged.${field === "fallback" ? " Unchained routes use the default / parent model; admission may deny dispatch." : ""}`;
+        } catch (error) {
+          warning = `Reset inheritance is currently invalid: ${String(error)}`;
+        }
+      } else if (id === "add-chain") {
+        warning =
+          destination === "global"
+            ? "Global affects other workspaces. Add and grant permits explicit overrides too, not only fallback; route + required grant save atomically."
+            : "Project can only retain/remove the authorized ordered subsequence. Change destination explicitly for Global controls.";
+      } else if (id === "disable-chain" || id.endsWith(":remove")) {
+        warning = `Keeps exact model grants. ${id === "disable-chain" || profile.fallback?.length === 1 ? `Disables fallback → ${profile.model ? compactModelLabel(profile.model) : "selected parent model"}; current permissions may deny dispatch.` : "Removes only this route target."}`;
+      }
       result.push({
         id,
         text,
         run,
+        warning,
         reason:
           reason ??
           (!recovery && !mutable()
@@ -354,11 +448,12 @@ export function createEditableProfileInspector(
               : "Read-only"
             : undefined),
       });
+    };
     const fieldState = (field: string) => {
       const pending = controller.pending;
       const index = pending.findIndex((i) => i.profile === name && i.field === field);
       return index < 0
-        ? "Last verified"
+        ? ""
         : controller.failure
           ? "Not saved / pending"
           : index === 0
@@ -368,7 +463,7 @@ export function createEditableProfileInspector(
     const field = (key: "description" | "prompt") => {
       action(
         key,
-        `${key === "prompt" ? "Prompt" : "Description"} · ${fieldState(key)} · ${Object.hasOwn(raw, key) ? "override" : "inherited"}`,
+        `${key === "prompt" ? "Instructions (prompt)" : "Description"}${fieldState(key) ? ` · ${fieldState(key)}` : ""} · ${Object.hasOwn(raw, key) ? "override" : "inherited"}`,
         () => editText(key),
       );
       info(String(raw[key] ?? profile[key]));
@@ -394,7 +489,7 @@ export function createEditableProfileInspector(
       info(
         `${failure.error.stage}: ${failure.error.path} · replacement ${failure.error.replacement}`,
       );
-      info(failure.error.message);
+      info(failure.error.message, "failure-message");
       if (failure.recovery === "reload")
         action(
           "reload",
@@ -457,29 +552,28 @@ export function createEditableProfileInspector(
         true,
       );
     }
-    if (notice) info(notice);
+    if (notice) info(notice, "notice");
     if (destination === "global" && current.provenance[name]?.source === "project")
       info(
         "Project-local definition: browse only here. Change destination explicitly to trusted Project; no Global shadow is created.",
       );
     if (listField) {
-      heading(`${listField} · ${fieldState(listField)}`, "list");
-      action(
-        "back-list",
-        "Back to grouped settings",
-        () => {
-          listField = undefined;
-          activeId = "description";
-        },
-        undefined,
-        true,
+      heading(
+        `${listField === "models" ? "Exact model grants (models)" : listField === "spawn" ? "Spawn targets" : listField === "coordination" ? "Coordination" : profileSettingLabels[listField]}${fieldState(listField) ? ` · ${fieldState(listField)}` : ""}`,
+        "list",
       );
+      action("back-list", "Back to overview / previous setting", back, undefined, true);
       info(
         listField === "leafTools"
           ? "Trusted reviewed leaf code, not a sandbox or forwarding grant."
           : listField === "skills"
             ? "Exact absolute skill paths become explicit grants; no discovery or execution."
             : "Each membership change saves immediately. [] denies; reset inherits. Callable tools unknown.",
+      );
+      info(
+        Object.hasOwn(raw, listField)
+          ? `Selected layer: ${Array.isArray(raw[listField]) && (raw[listField] as unknown[]).length === 0 ? "explicit empty grant; denies all" : "explicit override"}. Reset removes only this layer's declaration.`
+          : "Selected layer: inherited. An explicit empty grant denies all; reset inherits again.",
       );
       if (listField === "models") {
         const grants = profile.models ?? [];
@@ -568,194 +662,263 @@ export function createEditableProfileInspector(
           () => reset(listField!),
           Object.hasOwn(raw, listField) ? undefined : "Already inherited",
         );
-    } else {
-      heading("Identity / instructions", "instructions");
-      field("description");
-      field("prompt");
-      heading(`Model chain · ${fieldState("fallback")}`, "chain");
-      info(
-        "Primary runs first; retries follow in order. Unavailable rows may be skipped; admission still applies.",
-      );
-      const chain = profile.fallback ?? [];
-      if (!chain.length)
-        info(
-          `No chain · ${profile.model ? modelLabel(profile.model) : "selected parent model"} route${profile.prewalk ? "; prewalk configured" : ""}. Current permissions may deny dispatch.`,
-        );
-      for (const [index, target] of chain.entries()) {
-        const id = `chain:${exact(target)}`;
-        action(id, `${index === 0 ? "Primary" : `Retry ${index}`} · ${modelLabel(target)}`, () => {
-          activeId = `${id}:earlier`;
+    } else if (!panel) {
+      for (const item of profileOverview(
+        profile,
+        profile.fallback?.[0] && compactModelLabel(profile.fallback[0]),
+      )) {
+        if (!item.key) {
+          heading(item.heading!, `group:${item.heading}`);
+          continue;
+        }
+        const key = item.key;
+        const fields = profileSettingFields(key);
+        const state = [...new Set(fields.map(fieldState).filter(Boolean))].join(" / ");
+        const inheritance =
+          key === "advanced"
+            ? ""
+            : fields.some((f) => Object.hasOwn(raw, f))
+              ? "override"
+              : "inherited";
+        result.push({
+          id: key,
+          text: profileSettingLabels[key],
+          label: profileSettingLabels[key],
+          value: `${item.value}${state ? ` · ${state}` : ""}`,
+          metadata: `${fields.some((f) => Array.isArray(raw[f]) && (raw[f] as unknown[]).length === 0) ? "explicit empty · " : ""}${inheritance}`,
+          help: profileSettingHelp[key],
+          run: () => {
+            panel = key;
+            panelReturn = key;
+            offset = 0;
+            if (key === "tools" || key === "skills" || key === "leafTools") listField = key;
+            activeId =
+              key === "description" || key === "prompt"
+                ? key
+                : key === "route"
+                  ? profile.fallback?.[0]
+                    ? `chain:${exact(profile.fallback[0])}`
+                    : "add-chain"
+                  : key === "delegation"
+                    ? "list:spawn"
+                    : "select:model";
+          },
         });
-        action(
-          `${id}:earlier`,
-          "  ↑ Earlier",
-          () => {
-            send({
-              ...identity(),
-              field: "fallback",
-              action: "move",
-              target,
-              direction: "earlier",
-            });
-            activeId = id;
-          },
-          destination === "project"
-            ? "Operator order only; change to Global"
-            : index === 0
-              ? "Already first"
-              : undefined,
-        );
-        action(
-          `${id}:later`,
-          "  ↓ Later",
-          () => {
-            send({ ...identity(), field: "fallback", action: "move", target, direction: "later" });
-            activeId = id;
-          },
-          destination === "project"
-            ? "Operator order only; change to Global"
-            : index === chain.length - 1
-              ? "Already last"
-              : undefined,
-        );
-        action(
-          `${id}:effort`,
-          "  Change supported effort (retains old grant)",
-          () => pick("fallback", "replace-target", target),
-          destination === "project" ? "Project cannot choose a different exact target" : undefined,
-        );
-        action(
-          `${id}:remove`,
-          chain.length === 1
-            ? "  Remove final target → disable fallback; keep grants"
-            : "  Remove from chain; keep grants",
-          () => send({ ...identity(), field: "fallback", action: "remove", target }),
-        );
       }
-      info(
-        `After Disable / final removal: ${profile.model ? modelLabel(profile.model) : "selected parent model"}${profile.prewalk ? "; prewalk remains" : ""}; current permissions may deny dispatch.`,
+    } else {
+      action(
+        "back-panel",
+        targetPanel ? "Back to Models" : "Back to overview",
+        back,
+        undefined,
+        true,
       );
-      try {
-        const inheritedCatalog = structuredClone(current);
-        delete rawRole(inheritedCatalog, destination, name).fallback;
-        const inherited = (
-          destination === "global"
-            ? resolveProfileCatalog(inheritedCatalog.global, {}, options.availableSkills ?? [])
-            : resolveProfileCatalog(
-                inheritedCatalog.global,
-                inheritedCatalog.project,
-                options.availableSkills ?? [],
-              )
-        ).profiles.find((p) => p.name === name);
+      if (panel === "description" || panel === "prompt") {
+        heading(profileSettingLabels[panel], "instructions");
+        field(panel);
+      }
+      if (panel === "route") {
+        heading(`Models${fieldState("fallback") ? ` · ${fieldState("fallback")}` : ""}`, "chain");
         info(
-          `Reset chain restores: ${inherited?.fallback?.map(modelLabel).join(" → ") ?? "Advanced default / parent route"}${inherited?.prewalk ? "; inherited prewalk" : ""}.`,
+          "Primary runs first; retries follow in order. Unavailable rows may be skipped; admission still applies.",
         );
-      } catch (error) {
-        info(`Reset inheritance is currently invalid: ${String(error)}`);
+        const chain = profile.fallback ?? [];
+        if (!chain.length)
+          info(
+            `No chain · ${profile.model ? modelLabel(profile.model) : "selected parent model"} route${profile.prewalk ? "; prewalk configured" : ""}. Current permissions may deny dispatch.`,
+          );
+        for (const [index, target] of chain.entries()) {
+          const id = `chain:${exact(target)}`;
+          if (targetPanel && targetPanel !== id) continue;
+          action(
+            id,
+            `${index === 0 ? "Primary" : `↳ Retry ${index}`} · ${compactModelLabel(target)}`,
+            () => {
+              targetPanel = id;
+              activeId = `${id}:earlier`;
+              offset = 0;
+            },
+            undefined,
+            true,
+          );
+          Object.assign(result.at(-1)!, {
+            label: index === 0 ? "Primary" : `↳ Retry ${index}`,
+            value: compactModelLabel(target),
+            model: target,
+            help: `Exact: ${target.provider}/${target.id} · ${target.effort}. Enter opens this target’s controls.`,
+          });
+          if (targetPanel !== id) continue;
+          info(`Exact target: ${target.provider}/${target.id} · ${target.effort}`);
+          const unavailable = profileModelReason(metadata(), target);
+          if (unavailable) info(`Warning: ${unavailable}`, `unavailable:${id}`);
+          action(
+            `${id}:earlier`,
+            "  ↑ Earlier",
+            () => {
+              send({
+                ...identity(),
+                field: "fallback",
+                action: "move",
+                target,
+                direction: "earlier",
+              });
+              activeId = id;
+            },
+            destination === "project"
+              ? "Operator order only; change to Global"
+              : index === 0
+                ? "Already first"
+                : undefined,
+          );
+          action(
+            `${id}:later`,
+            "  ↓ Later",
+            () => {
+              send({
+                ...identity(),
+                field: "fallback",
+                action: "move",
+                target,
+                direction: "later",
+              });
+              activeId = id;
+            },
+            destination === "project"
+              ? "Operator order only; change to Global"
+              : index === chain.length - 1
+                ? "Already last"
+                : undefined,
+          );
+          action(
+            `${id}:effort`,
+            "  Change supported effort (retains old grant)",
+            () => pick("fallback", "replace-target", target),
+            destination === "project"
+              ? "Project cannot choose a different exact target"
+              : undefined,
+          );
+          action(
+            `${id}:remove`,
+            chain.length === 1
+              ? "  Remove final target → disable fallback; keep grants"
+              : "  Remove from chain; keep grants",
+            () => {
+              send({ ...identity(), field: "fallback", action: "remove", target });
+              targetPanel = undefined;
+              activeId = "add-chain";
+            },
+          );
+        }
+        if (!targetPanel) {
+          action(
+            "add-chain",
+            profile.prewalk
+              ? "Switch from prewalk and add / grant"
+              : "Add to chain / Add and grant",
+            () => pick("fallback", profile.prewalk ? "switch-from-prewalk" : "add"),
+            destination === "project"
+              ? "Change destination to Global; inherited prewalk cannot be bypassed"
+              : chain.length >= 64
+                ? "Maximum 64 chain targets"
+                : undefined,
+          );
+          action(
+            "disable-chain",
+            "Disable chain → Advanced default / parent route (may be denied)",
+            () => send({ ...identity(), field: "fallback", action: "disable" }),
+            !chain.length ? "Already unchained" : undefined,
+          );
+          action(
+            "reset-chain",
+            "Reset chain to inherited (not Disable)",
+            () => reset("fallback"),
+            Object.hasOwn(raw, "fallback") ? undefined : "Already inherited",
+          );
+        }
       }
-      info(
-        destination === "global"
-          ? "GLOBAL REACH: Add and grant permits explicit overrides too, not only fallback; other workspaces are affected."
-          : "Project can only retain/remove the authorized ordered subsequence. Global controls require an explicit destination change.",
-      );
-      action(
-        "add-chain",
-        profile.prewalk ? "Switch from prewalk and add / grant" : "Add to chain / Add and grant",
-        () => pick("fallback", profile.prewalk ? "switch-from-prewalk" : "add"),
-        destination === "project"
-          ? "Change destination to Global; inherited prewalk cannot be bypassed"
-          : chain.length >= 64
-            ? "Maximum 64 chain targets"
-            : undefined,
-      );
-      action(
-        "disable-chain",
-        "Disable chain → Advanced default / parent route (may be denied)",
-        () => send({ ...identity(), field: "fallback", action: "disable" }),
-        !chain.length ? "Already unchained" : undefined,
-      );
-      action(
-        "reset-chain",
-        "Reset chain to inherited (not Disable)",
-        () => reset("fallback"),
-        Object.hasOwn(raw, "fallback") ? undefined : "Already inherited",
-      );
-      heading("Permissions", "permissions");
-      info(
-        "Maximum declarations only; callable tools unknown. General inherits available parent skills, never parent instructions/history.",
-      );
-      for (const field of [
-        "tools",
-        "skills",
-        "spawn",
-        "coordination",
-        ...(name === "general" ? (["leafTools"] as const) : []),
-      ] as const)
-        action(
-          `list:${field}`,
-          `${field}: ${format(raw[field] ?? profile[field])} · ${fieldState(field)}`,
-          () => {
-            listField = field;
-            activeId = "back-list";
-          },
-        );
-      heading("Advanced", "advanced");
-      for (const field of ["model", "prewalk"] as const) {
+      if (panel === "delegation") {
+        heading("Delegation", "permissions");
         info(
-          `${field}: ${profile[field] ? modelLabel(profile[field]!) : field === "model" ? "selected parent model" : "not configured"} · ${fieldState(field)}`,
+          "Maximum declarations only; callable tools unknown. General inherits available parent skills, never parent instructions/history.",
         );
-        action(
-          `select:${field}`,
-          field === "prewalk" && profile.fallback
-            ? "Disable fallback and select prewalk (compound)"
-            : `Choose ${field} from exact grants`,
-          () =>
-            pick(
-              field,
-              field === "prewalk" && profile.fallback ? "switch-from-fallback" : "select",
-            ),
-          field === "prewalk" && destination === "project"
-            ? "Only inherited operator prewalk; change to Global"
-            : undefined,
-        );
-        action(
-          `reset:${field}`,
-          `Reset ${field} to inherited (no off sentinel)`,
-          () => reset(field),
-          Object.hasOwn(raw, field) ? undefined : "Already inherited",
-        );
+        for (const field of ["spawn", "coordination"] as const)
+          action(
+            `list:${field}`,
+            `${field === "spawn" ? "Spawn targets (spawn)" : "Coordination (coordination)"}: ${(profile[field] ?? []).join(", ") || "None"}${fieldState(field) ? ` · ${fieldState(field)}` : ""}`,
+            () => {
+              listField = field;
+              activeId = "back-list";
+            },
+            undefined,
+            true,
+          );
       }
-      action("models", `Exact model grants: ${profile.models?.length ?? "unset"}`, () => {
-        listField = "models";
-        activeId = "grant";
-      });
-      const structural = (actionName: StructuralAction, label: string) =>
-        action(actionName, label, () => navigate(actionName));
-      structural("create", "Create / copy custom role · structural transaction");
-      if (own) structural("delete", "Delete custom definition · confirmed transaction");
-      else structural("reset-override", "Reset whole override · structural transaction");
-      if (profile.projectCeiling && destination === "project")
-        structural("ceiling", "Change local authority ceiling · structural transaction");
-      if (destination === "global") {
-        structural("ceilings", "Authorize project-role ceilings · structural transaction");
-        structural(
-          "registrations",
-          "Register project-local spawn targets · structural transaction",
+      if (panel === "advanced") {
+        heading("Advanced", "advanced");
+        for (const field of ["model", "prewalk"] as const) {
+          info(
+            `${field}: ${profile[field] ? modelLabel(profile[field]!) : field === "model" ? "selected parent model" : "not configured"} · ${fieldState(field)}`,
+          );
+          action(
+            `select:${field}`,
+            field === "prewalk" && profile.fallback
+              ? "Disable fallback and select prewalk (compound)"
+              : `Choose ${field} from exact grants`,
+            () =>
+              pick(
+                field,
+                field === "prewalk" && profile.fallback ? "switch-from-fallback" : "select",
+              ),
+            field === "prewalk" && destination === "project"
+              ? "Only inherited operator prewalk; change to Global"
+              : undefined,
+          );
+          action(
+            `reset:${field}`,
+            `Reset ${field} to inherited (no off sentinel)`,
+            () => reset(field),
+            Object.hasOwn(raw, field) ? undefined : "Already inherited",
+          );
+        }
+        action(
+          "models",
+          `Exact model grants: ${profile.models?.length ?? "unset"}`,
+          () => {
+            listField = "models";
+            activeId = "grant";
+          },
+          undefined,
+          true,
         );
+        const structural = (actionName: StructuralAction, label: string) =>
+          action(actionName, label, () => navigate(actionName));
+        structural("create", "Create / copy custom role · structural transaction");
+        if (own) structural("delete", "Delete custom definition · confirmed transaction");
+        else structural("reset-override", "Reset whole override · structural transaction");
+        if (profile.projectCeiling && destination === "project")
+          structural("ceiling", "Change local authority ceiling · structural transaction");
+        if (destination === "global") {
+          structural("ceilings", "Authorize project-role ceilings · structural transaction");
+          structural(
+            "registrations",
+            "Register project-local spawn targets · structural transaction",
+          );
+        }
       }
     }
-    action(
-      "provenance",
-      diagnostic
-        ? "Hide raw / inherited / effective details"
-        : "Inspect raw / inherited / effective details",
-      () => {
-        diagnostic = !diagnostic;
-      },
-      undefined,
-      true,
-    );
-    if (diagnostic) {
+    if (panel === "advanced")
+      action(
+        "provenance",
+        diagnostic
+          ? "Hide raw / inherited / effective details"
+          : "Inspect raw / inherited / effective details",
+        () => {
+          diagnostic = !diagnostic;
+        },
+        undefined,
+        true,
+      );
+    if (diagnostic && panel === "advanced") {
       info(`Destination path: ${controller.path}`);
       info(`Source: ${format(current.provenance[name])}`);
       info(`Raw ${destination}: ${format(raw)}`);
@@ -819,7 +982,8 @@ export function createEditableProfileInspector(
       const railWidth = wide ? Math.min(25, Math.floor(inner / 3)) : inner;
       const paneWidth = wide ? inner - railWidth - 3 : inner;
       const bodyHeight = height - 5;
-      viewport = bodyHeight - (wide ? 0 : 2);
+      const helpHeight = child ? 0 : 3;
+      viewport = bodyHeight - (wide ? 0 : 2) - helpHeight;
       childHeight = viewport;
       rows = buildRows();
       const actions = rows.filter((row) => row.run);
@@ -834,12 +998,48 @@ export function createEditableProfileInspector(
         content = [...child.render(paneWidth), ...errorLines].slice(0, viewport);
       } else {
         const indexed = rows.map((row) => {
-          const lines = safe(
-            `${row.run ? (row.id === activeId && focus === "settings" ? "› " : "  ") : ""}${row.text}${row.reason ? ` [disabled: ${row.reason}]` : ""}`,
-          )
-            .split("\n")
-            .flatMap((line) => wrapTextWithAnsi(line, paneWidth))
-            .map((line) => theme.fg(row.heading ? "accent" : row.reason ? "muted" : "text", line));
+          const selectedRow = row.id === activeId && focus === "settings";
+          const lines = row.label
+            ? profileSettingLines(
+                theme,
+                row.label,
+                row.model ? compactModelLabel(row.model, true) : safe(row.value ?? ""),
+                paneWidth,
+                selectedRow,
+                row.metadata,
+              )
+            : safe(
+                `${row.run ? (selectedRow ? "› " : "  ") : ""}${row.text}${row.reason ? ` [disabled: ${row.reason}]` : ""}`,
+              )
+                .split("\n")
+                .flatMap((line) => wrapTextWithAnsi(line, paneWidth))
+                .map((line) =>
+                  row.heading
+                    ? theme.style(line, {
+                        fg:
+                          row.id === "recovery" || row.id === "reopen-error" ? "warning" : "accent",
+                        bold: true,
+                      })
+                    : theme.fg(
+                        row.id === "failure-message" ||
+                          row.id === "notice" ||
+                          row.id.startsWith("unavailable:")
+                          ? "warning"
+                          : row.reason
+                            ? "muted"
+                            : selectedRow
+                              ? "accent"
+                              : "text",
+                        line,
+                      ),
+                );
+          if (row.warning && row.id === activeId)
+            lines.push(
+              ...wrapTextWithAnsi(safe(row.warning), paneWidth).map((line) =>
+                theme.fg("warning", line),
+              ),
+            );
+          if (row.run || row.heading) lines.push("");
           return { row, lines };
         });
         let start = 0;
@@ -861,6 +1061,27 @@ export function createEditableProfileInspector(
         content = spans.flatMap((span) => span.lines).slice(offset, offset + viewport);
         follow = false;
       }
+      const selectedHelp =
+        rows.find((r) => r.id === activeId)?.help ??
+        (panel
+          ? profileSettingHelp[panel]
+          : "Enter: open selected setting. Browsing never changes permissions.");
+      const help = controller.failure
+        ? `${controller.failure.intent.profile}.${controller.failure.intent.field}: Not saved · ${controller.pending.length} unsaved · ${controller.failure.recovery === "reload" ? "Reload required" : "Retry / Revert available"}`
+        : controller.reloadError
+          ? "Read-only: reopening failed. Reload current allowed layers, or close."
+          : selectedHelp;
+      if (!child)
+        content = [
+          ...content,
+          ...Array(Math.max(0, viewport - content.length)).fill(""),
+          "",
+          ...wrapTextWithAnsi(safe(help), paneWidth)
+            .slice(0, 2)
+            .map((line) =>
+              theme.fg(controller.failure || controller.reloadError ? "warning" : "muted", line),
+            ),
+        ];
       const profiles = catalog().profiles;
       if (!profiles.some((p) => p.name === name)) name = profiles[0]?.name ?? "general";
       const selectedIndex = profiles.findIndex((p) => p.name === name);
@@ -874,7 +1095,7 @@ export function createEditableProfileInspector(
               )
               .map(
                 (p) =>
-                  `${name === p.name ? "›" : " "} ${p.name}${controller.pending.some((i) => i.profile === p.name) ? " [pending]" : ""}`,
+                  `${name === p.name && focus === "rail" ? "›" : " "} ${p.name}${controller.pending.some((i) => i.profile === p.name) ? " [pending]" : ""}`,
               ),
             "",
             `Source: ${catalog().provenance[name]?.source ?? "resolved"}`,
@@ -892,7 +1113,7 @@ export function createEditableProfileInspector(
               theme.fg("border", " │ ") +
               cell(content[i] ?? "", paneWidth),
           )
-        : [...roster, ...Array.from({ length: viewport }, (_, i) => content[i] ?? "")];
+        : [...roster, ...Array.from({ length: viewport + helpHeight }, (_, i) => content[i] ?? "")];
       const row = (text: string) => paint(`│ ${cell(text, inner)} │`);
       const label = textEdit
         ? "Unfinished text · not committed"
@@ -901,10 +1122,11 @@ export function createEditableProfileInspector(
           : controller.status === "saved"
             ? "Saved · verified"
             : controller.status;
+      const mode = controller.status === "read-only" ? "Read-only" : "Editing";
       return [
         paint(`╭${cell(` Subagent Profiles / ${safe(name)} · ${label} `, width - 2)}╮`),
         row(
-          `${destination === "global" ? "GLOBAL · other workspaces" : options.isProjectTrusted() ? "Trusted Project" : "Project · trust unavailable"} · ${controller.pending.length} pending · ${focus}`,
+          `${destination === "global" ? `${mode} GLOBAL · other workspaces` : options.isProjectTrusted() ? `${mode} Trusted Project` : "Read-only Project · trust unavailable"} · ${controller.pending.length} pending · ${focus}`,
         ),
         row(safe(controller.path)),
         ...body.map(row),
@@ -913,7 +1135,7 @@ export function createEditableProfileInspector(
             ? textEdit
               ? `${textEdit.field === "prompt" ? "Native submit" : "Enter / blur"}: commit · Esc: unfinished only · Tab: profiles`
               : "Catalog · Tab focus · Esc back · Ctrl+← profiles"
-            : "Tab rail/settings · ↑↓ · 1 Instructions 2 Chain 3 Permissions 4 Advanced · Esc close",
+            : "Tab rail/settings · ↑↓ · Enter open · 1–4 groups · Esc back/close",
         ),
         paint("╰" + "─".repeat(width - 2) + "╯"),
       ];
@@ -923,7 +1145,8 @@ export function createEditableProfileInspector(
         if (keys.matches(data, "tui.select.cancel")) {
           // Resize never changes Escape into a close/commit of hidden unfinished input.
           if (textEdit) finishText(false);
-          else if (child) leaveChild();
+          else if (child) child.handleInput?.(data);
+          else if (panel || listField) back();
           else navigate();
           requestRender();
         }
@@ -932,7 +1155,7 @@ export function createEditableProfileInspector(
       if (child && focus === "settings") {
         if (keys.matches(data, "tui.select.cancel")) {
           if (textEdit) finishText(false);
-          else leaveChild();
+          else child.handleInput?.(data);
         } else if ((textEdit && matchesKey(data, "tab")) || matchesKey(data, "ctrl+left")) {
           // Only single-line blur commits. Multiline commits exclusively on native submit.
           if (textEdit?.input instanceof Input) {
@@ -945,7 +1168,8 @@ export function createEditableProfileInspector(
         return;
       }
       if (keys.matches(data, "tui.select.cancel")) {
-        navigate();
+        if (listField || panel) back();
+        else navigate();
         requestRender();
         return;
       }
@@ -956,7 +1180,7 @@ export function createEditableProfileInspector(
         const delta = keys.matches(data, "tui.select.up") ? -1 : 1;
         if (focus === "rail") {
           const profiles = catalog().profiles;
-          positions.set(name, { id: activeId, offset });
+          positions.set(name, { id: activeId, offset, panel, listField, targetPanel, panelReturn });
           name =
             profiles[
               Math.max(
@@ -967,7 +1191,10 @@ export function createEditableProfileInspector(
           const saved = positions.get(name);
           activeId = saved?.id ?? "description";
           offset = saved?.offset ?? 0;
-          listField = undefined;
+          listField = saved?.listField;
+          panel = saved?.panel;
+          targetPanel = saved?.targetPanel;
+          panelReturn = saved?.panelReturn ?? "description";
         } else {
           const actions = rows.filter((row) => row.run);
           activeId =
@@ -997,8 +1224,11 @@ export function createEditableProfileInspector(
         follow = true;
       } else if (/^[1-4]$/.test(data)) {
         listField = undefined;
+        panel = undefined;
+        targetPanel = undefined;
+        offset = 0;
         focus = "settings";
-        activeId = ["description", "add-chain", "list:tools", "select:model"][Number(data) - 1]!;
+        activeId = ["description", "route", "tools", "advanced"][Number(data) - 1]!;
         follow = true;
       } else if (
         data === "j" ||

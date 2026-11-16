@@ -20,13 +20,15 @@ const keys = {
     (
       {
         "tui.select.cancel": "\x1b",
+        "tui.select.confirm": "\r",
         "tui.select.up": "up",
         "tui.select.down": "down",
         "tui.select.pageUp": "pgup",
         "tui.select.pageDown": "pgdown",
       } as Record<string, string>
     )[action],
-  getKeys: () => ["escape" as const],
+  getKeys: (action: string) =>
+    action === "tui.select.confirm" ? ["enter" as const] : ["escape" as const],
 };
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -188,15 +190,15 @@ test("viewer selects arbitrary roles, scrolls complete sanitized details, stacks
   const futureDetails = scrollThrough(viewer, 120);
   assert.match(futureDetails, /\/synthetic\/SKILL.md/);
   assert.match(futureDetails, /Models grant/);
-  viewer.handleInput!("\x1b[H");
+  openSetting(viewer, 120, "1", 1);
   viewer.handleInput!("pgdown");
   assert.doesNotMatch(render(120), /Description/);
   viewer.handleInput!("\x1b[F");
   const end = render(120);
-  assert.match(end, /Admission also applies/);
+  assert.match(end, /END PROMPT/);
   assert.doesNotMatch(end, /\x1b/);
-  viewer.handleInput!("\x1b[H");
-  assert.match(render(120), /Description/);
+  viewer.handleInput!("\x1b");
+  viewer.handleInput!("\t");
   viewer.handleInput!("up");
   assert.match(render(120), /implementation/);
   assert.match(render(42), /─{10}/);
@@ -229,14 +231,32 @@ test("viewer pins a framed footer and selected header outside the scroll viewpor
   assert.match(first.at(-1)!, /╰─+╯/);
   const divider = first.findIndex((line) => /^├─+┤$/.test(line));
   assert.ok(divider > 0);
-  assert.match(first.slice(divider + 1).join("\n"), /escape: close.*callable tools unknown here/);
+  assert.match(
+    first.slice(divider + 1).join("\n"),
+    /escape: back\/close.*callable tools unknown here/,
+  );
   viewer.handleInput!("\x1b[F");
   const last = viewer.render(120);
   assert.match(last.slice(0, 4).join("\n"), /general.*resolved.*read-only/s);
   assert.deepEqual(last.slice(divider), first.slice(divider));
 });
 
-function scrollThrough(viewer: ReturnType<typeof createProfileViewer>, width: number): string {
+function openSetting(
+  viewer: ReturnType<typeof createProfileViewer>,
+  width: number,
+  group: string,
+  steps = 0,
+) {
+  viewer.handleInput!(group);
+  viewer.render(width);
+  for (let i = 0; i < steps; i++) {
+    viewer.handleInput!("down");
+    viewer.render(width);
+  }
+  viewer.handleInput!("\r");
+  viewer.render(width);
+}
+function scrollPanel(viewer: ReturnType<typeof createProfileViewer>, width: number): string {
   viewer.handleInput!("\x1b[H");
   const frames: string[] = [];
   let previous = "";
@@ -248,6 +268,26 @@ function scrollThrough(viewer: ReturnType<typeof createProfileViewer>, width: nu
     viewer.handleInput!("j");
   }
   assert.fail("details should reach a stable end within the fixture's line count");
+}
+function scrollThrough(viewer: ReturnType<typeof createProfileViewer>, width: number): string {
+  const frames = [];
+  for (const [group, steps] of [
+    ["1", 0],
+    ["1", 1],
+    ["2", 0],
+    ["3", 0],
+    ["3", 1],
+    ["3", 2],
+    ["3", 3],
+    ["4", 0],
+  ] as const) {
+    openSetting(viewer, width, group, steps);
+    frames.push(scrollPanel(viewer, width));
+    viewer.handleInput!("\x1b");
+  }
+  viewer.handleInput!("\t"); // Return to profile selection after inspecting settings.
+  viewer.render(width);
+  return frames.join("\n");
 }
 
 test("wrapped content, skills, structured policies and extra fields remain completely scrollable after resize", () => {
@@ -286,7 +326,6 @@ test("wrapped content, skills, structured policies and extra fields remain compl
     for (const token of [...tokens, "last-prompt-marker", "description-marker", "extra-marker"])
       assert.ok(unwrapped.includes(token), `missing ${token} at ${width}`);
     for (const label of [
-      "Permissions",
       "Advanced · model policy",
       "Model default:",
       "Models grant:",
@@ -358,7 +397,7 @@ test("theme-derived neutral paint covers frames, padding and ANSI resets and ref
       return `\x1b[31m${text}\x1b[0m\x1b[49m`;
     },
     style: (text: string, { bg }: ThemeStyle) => {
-      assert.ok(bg && typeof bg !== "string");
+      if (bg) assert.ok(typeof bg !== "string");
       return styleText(text, { bg }, "truecolor");
     },
   };
@@ -384,7 +423,7 @@ test("theme-derived neutral paint covers frames, padding and ANSI resets and ref
     }
   }
   assert.ok(calls.some(({ color, text }) => color === "accent" && text === "> general"));
-  assert.ok(calls.some(({ color, text }) => color === "accent" && text === "Instructions"));
+  assert.ok(calls.some(({ color, text }) => color === "accent" && text === "general"));
   assert.ok(calls.some(({ color, text }) => color === "border" && text.includes("┤")));
   palette.colors.customMessageBg = oklchColor(0.9, 0.1, 330);
   viewer.invalidate();
@@ -411,6 +450,7 @@ test("paging, line scrolling and resize clamping keep the footer and full final 
     () => rows,
   );
   const render = (width: number) => viewer.render(width).join("\n");
+  openSetting(viewer, 120, "4");
   const initial = render(120);
   viewer.handleInput!("pgdown");
   const page = render(120);
@@ -432,8 +472,8 @@ test("paging, line scrolling and resize clamping keep the footer and full final 
     .slice(divider + 1, -1)
     .map((line) => line.slice(2, -2).trim())
     .join(" ");
-  assert.match(footer, /↑↓ select · j\/k scroll · PgUp\/Dn · Home\/End/);
-  assert.match(footer, /escape: close · callable tools unknown here/);
+  assert.match(footer, /↑↓ scroll · j\/k scroll · PgUp\/Dn · Home\/End/);
+  assert.match(footer, /escape: back\/close · callable tools unknown here/);
   assert.match(resized, /general\s*│\n│ resolved · read-only/);
   const position = resized.match(/detail (\d+)–(\d+)\/(\d+)/)!;
   assert.ok(Number(position[2]) <= Number(position[3]), "resize must clamp to content bounds");
@@ -444,7 +484,8 @@ test("paging, line scrolling and resize clamping keep the footer and full final 
   rows = 2;
   assert.match(render(42), /Resize for details/);
   rows = 30;
-  viewer.handleInput!("\x1b[H");
+  viewer.handleInput!("\x1b");
+  viewer.handleInput!("1");
   assert.match(render(42), /Description/);
 });
 
@@ -469,7 +510,53 @@ test("configured fallback chains are visible separately from unordered model gra
 });
 
 test("Inspector focus and group jumps retain the selected role through stacked and tiny layouts", () => {
-  let rows = 24;
+  let rows = 28;
+  const edited: string[] = [];
+  let closed = 0;
+  const viewer = createProfileViewer(
+    bundledProfiles(),
+    theme,
+    keys,
+    () => {},
+    () => closed++,
+    () => rows,
+    { edit: (name) => edited.push(name) },
+  );
+  viewer.render(120);
+  viewer.handleInput!("2");
+  const model = viewer.render(120).join("\n");
+  assert.match(model, /› Models/);
+  assert.doesNotMatch(model, /> general/); // One keyboard cursor belongs to the focused pane.
+  assert.deepEqual(edited, []);
+  viewer.handleInput!("\r");
+  assert.match(viewer.render(120).join("\n"), /Fallback chain/);
+  assert.deepEqual(edited, [], "Enter inspects; only e requests an edit destination");
+  viewer.handleInput!("\x1b");
+  assert.equal(closed, 0);
+  assert.match(viewer.render(80).join("\n"), /› Models/);
+  viewer.handleInput!("\t");
+  viewer.handleInput!("down");
+  assert.match(viewer.render(52).join("\n"), /Profiles 2\/4 · > scout/);
+  viewer.handleInput!("4");
+  viewer.render(120);
+  viewer.handleInput!("\r");
+  assert.match(viewer.render(120).join("\n"), /Advanced · model policy/);
+  rows = 6;
+  viewer.render(20);
+  viewer.handleInput!("e");
+  assert.deepEqual(edited, [], "hidden editing destination cannot activate");
+  rows = 28;
+  viewer.render(80);
+  viewer.handleInput!("e");
+  assert.deepEqual(edited, ["scout"]);
+  viewer.handleInput!("\x1b");
+  viewer.render(80);
+  viewer.handleInput!("\x1b");
+  assert.equal(closed, 1);
+});
+
+test("intermediate-height resize-only viewer cannot activate a hidden edit destination", () => {
+  let rows = 12;
   const edited: string[] = [];
   const viewer = createProfileViewer(
     bundledProfiles(),
@@ -480,32 +567,11 @@ test("Inspector focus and group jumps retain the selected role through stacked a
     () => rows,
     { edit: (name) => edited.push(name) },
   );
-  viewer.render(120);
-  viewer.handleInput!("2");
-  assert.match(viewer.render(120).join("\n"), /Model chain/);
-  assert.match(viewer.render(120).join("\n"), /Tab: settings/);
-  viewer.handleInput!("down");
-  assert.match(viewer.render(52).join("\n"), /Profiles 1\/4 · > general/);
-  viewer.handleInput!("\t");
-  viewer.handleInput!("down");
-  assert.match(viewer.render(52).join("\n"), /Profiles 2\/4 · > scout/);
-  viewer.handleInput!("4");
-  const advanced = viewer.render(120).join("\n");
-  assert.match(advanced, /Advanced · model policy/);
-  viewer.handleInput!("\t");
-  viewer.handleInput!("up");
-  viewer.render(120);
-  viewer.handleInput!("down");
-  assert.equal(
-    viewer.render(120).join("\n"),
-    advanced.replace("Tab: settings", "Tab: profiles").replace("↑↓ scroll", "↑↓ select"),
-  );
-  rows = 6;
-  assert.match(viewer.render(20).join("\n"), /Profiles/);
+  assert.match(viewer.render(120).join("\n"), /Resize for details/);
   viewer.handleInput!("e");
-  assert.deepEqual(edited, [], "hidden editing destination cannot activate");
-  rows = 24;
-  viewer.render(80);
+  assert.deepEqual(edited, []);
+  rows = 28;
+  viewer.render(120);
   viewer.handleInput!("e");
-  assert.deepEqual(edited, ["scout"]);
+  assert.deepEqual(edited, ["general"]);
 });

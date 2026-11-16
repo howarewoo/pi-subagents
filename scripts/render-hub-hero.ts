@@ -108,7 +108,18 @@ const widgetMode = process.argv.includes("--widget");
 const palette: Parameters<typeof createHub>[1] = {
   fg: (color, text) =>
     styleText(text, { fg: parseColor(colors[color] ?? colors.text) }, "truecolor"),
-  style: (text, options) => styleText(text, options, "truecolor"),
+  style: (text, options) =>
+    styleText(
+      text,
+      {
+        ...options,
+        fg:
+          typeof options.fg === "string"
+            ? parseColor(colors[options.fg] ?? colors.text)
+            : options.fg,
+      },
+      "truecolor",
+    ),
   colors: { customMessageBg: oklchColor(0.337, 0, 0) },
 };
 const hub = createHub(
@@ -127,6 +138,7 @@ const profiles = createProfileViewer(
   () => {},
   () => {},
   () => 23,
+  { edit: () => {} },
 );
 // Keep elapsed widget metrics reproducible without a live clock/session.
 const widget = createChildWidget(

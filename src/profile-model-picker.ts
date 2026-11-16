@@ -2,6 +2,8 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   Input,
   matchesKey,
+  truncateToWidth,
+  visibleWidth,
   wrapTextWithAnsi,
   type Component,
   type Focusable,
@@ -50,6 +52,10 @@ export function createProfileModelPicker(
   let effort: ModelSelection["effort"] | undefined;
   let compact = true;
   let focused = false;
+  let details = false;
+  let detailOffset = 0;
+  let detailMaximum = 0;
+  let detailViewport = 1;
   const rows = () => filterProfileModels(catalog, input.getValue(), provider);
   const selection = (): ModelSelection | undefined => {
     const entry = rows()[selected];
@@ -72,7 +78,7 @@ export function createProfileModelPicker(
     },
     set focused(value) {
       focused = value;
-      input.focused = value && focus === 0;
+      input.focused = value && focus === 0 && !details;
     },
     render(width) {
       width = Math.max(0, width);
@@ -87,14 +93,81 @@ export function createProfileModelPicker(
       const list = rows();
       selected = Math.max(0, Math.min(selected, list.length - 1));
       const entry = list[selected];
-      const active = (name: (typeof focuses)[number], text: string) =>
-        `${focuses[focus] === name ? "›" : " "} ${text}`;
+      const active = (name: (typeof focuses)[number], text: string) => {
+        const colon = text.indexOf(":");
+        const label = colon >= 0 ? text.slice(0, colon + 1) : text;
+        return `${focuses[focus] === name && focused ? "›" : " "} ${theme.style(label, { fg: focuses[focus] === name ? "accent" : "text", bold: true })}${text.slice(label.length)}`;
+      };
       const reasonLines = wrapTextWithAnsi(
         safe(reason() ?? "Accessible in this session; profile authorization remains separate."),
         width,
-      ).slice(0, 3);
+      );
       const contextLines = options.context.flatMap((line) => wrapTextWithAnsi(safe(line), width));
-      const fixedHeight = 9 + contextLines.length + reasonLines.length;
+      const providerLabel =
+        catalog.entries.find((item) => item.provider === provider)?.providerLabel ??
+        "All providers";
+      input.focused = focused && focus === 0 && !details;
+      if (details) {
+        const lines = [
+          ...options.context,
+          "",
+          entry ? `ID: ${entry.provider}/${entry.id}` : "No selected model",
+          "",
+          "Supported efforts (exact values)",
+          ...(entry?.efforts.map(
+            (item) => `· ${item.effort}${item.reason ? ` — ${item.reason}` : ""}`,
+          ) ?? ["None"]),
+          "",
+          `Selected effort: ${effort ?? "not chosen"}`,
+          reason() ?? "Accessible in this session; profile authorization remains separate.",
+          "",
+          "Metadata Refresh rereads the host snapshot only; no network refresh.",
+        ].flatMap((line) => wrapTextWithAnsi(safe(line), width));
+        detailViewport = height - 4;
+        detailMaximum = Math.max(0, lines.length - detailViewport);
+        detailOffset = Math.min(detailOffset, detailMaximum);
+        return [
+          theme.style("Model details", { fg: "accent", bold: true }),
+          "",
+          ...lines.slice(detailOffset, detailOffset + detailViewport),
+          ...Array(Math.max(0, detailViewport - lines.length)).fill(""),
+          "",
+          theme.fg("muted", `↑/↓ · j/k · PgUp/Dn scroll · F1/${cancel}: back`),
+        ].map(paint);
+      }
+      const prefix = [
+        theme.style(safe(options.title), { fg: "accent", bold: true }),
+        ...contextLines.map((line) => theme.fg("muted", line)),
+        "",
+        ...input.render(width),
+        active("provider", `Provider: ${safe(providerLabel)} · ←/→ filter`),
+        "",
+        active("models", `Models: ${list.length} matches · ↑/↓ browse`),
+      ];
+      const suffix = [
+        "",
+        ...wrapTextWithAnsi(
+          active(
+            "effort",
+            `Effort: ${effort ?? "not chosen"} · ←/→ choose · ${entry?.efforts.length ?? 0} supported`,
+          ),
+          width,
+        ),
+        ...reasonLines.map((line) => theme.fg(reason() ? "warning" : "muted", line)),
+        "",
+        ...wrapTextWithAnsi(
+          active(
+            "add",
+            reason()
+              ? "Select [disabled]"
+              : `${options.selectionLabel ?? "Select (no automatic grants)"} · ${effort}`,
+          ),
+          width,
+        ),
+        active("refresh", "Refresh metadata · host snapshot only, no network refresh"),
+        theme.fg("muted", `Tab: focus · Enter: choose · F1: details · ${cancel}: back`),
+      ];
+      const fixedHeight = prefix.length + suffix.length;
       if (height <= fixedHeight) {
         compact = true;
         return ["Models · resize", `${cancel}: back`].slice(0, height).map(paint);
@@ -112,7 +185,15 @@ export function createProfileModelPicker(
             options,
           ),
         );
-        return `${start + index === selected ? "›" : " "} ${safe(item.name)} · ${safe(item.providerLabel)}${allDisabled ? " [disabled]" : ""}`;
+        const selectedRow = start + index === selected;
+        const warning = allDisabled ? " [disabled]" : "";
+        const name = truncateToWidth(safe(item.name), Math.max(1, width - 2 - warning.length));
+        const providerRoom = Math.max(0, width - 2 - visibleWidth(name) - warning.length - 3);
+        const providerText =
+          providerRoom >= 8
+            ? ` · ${theme.fg("muted", truncateToWidth(safe(item.providerLabel), providerRoom))}`
+            : "";
+        return `${selectedRow && focus === 2 && focused ? "›" : " "} ${theme.fg(selectedRow ? "accent" : "text", name)}${providerText}${theme.fg("warning", warning)}`;
       });
       if (!results.length)
         results.push(
@@ -127,44 +208,39 @@ export function createProfileModelPicker(
           ).slice(0, resultHeight),
         );
       while (results.length < resultHeight) results.push("");
-      const providerLabel =
-        catalog.entries.find((item) => item.provider === provider)?.providerLabel ??
-        "All providers";
-      input.focused = focused && focus === 0;
-      return [
-        theme.fg("accent", safe(options.title)),
-        ...contextLines,
-        ...input.render(width),
-        active("provider", `Provider: ${safe(providerLabel)} · ←/→ filter`),
-        active("models", `Accessible models · ${list.length} matches · ↑/↓ browse`),
-        ...results,
-        entry
-          ? `ID: ${safe(entry.provider)}/${safe(entry.id)}`
-          : "Saved selections are not changed by browsing.",
-        active(
-          "effort",
-          `Effort: ${effort ?? "not chosen"} · ←/→ choose · ${entry?.efforts.map((e) => e.effort).join(" / ") ?? "none"}`,
-        ),
-        ...reasonLines.map((line) => theme.fg(reason() ? "warning" : "muted", line)),
-        active(
-          "add",
-          reason()
-            ? "Select [disabled]"
-            : `${options.selectionLabel ?? "Select (no automatic grants)"} · ${effort}`,
-        ),
-        active("refresh", "Refresh metadata · host snapshot only, no network refresh"),
-        theme.fg("muted", `Tab: focus · Enter: choose · ${cancel}: back`),
-      ]
-        .slice(0, height)
-        .map(paint);
+      return [...prefix, ...results, ...suffix].map(paint);
     },
     handleInput(data) {
       if (keys.matches(data, "tui.select.cancel")) {
+        if (details) {
+          details = false;
+          requestRender();
+          return;
+        }
         done(undefined);
         return;
       }
       if (compact) return;
-      if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+      if (matchesKey(data, "f1")) {
+        details = !details;
+        detailOffset = 0;
+      } else if (details) {
+        const up = data === "k" || keys.matches(data, "tui.select.up");
+        const down = data === "j" || keys.matches(data, "tui.select.down");
+        const pageUp = keys.matches(data, "tui.select.pageUp");
+        const pageDown = keys.matches(data, "tui.select.pageDown");
+        if (matchesKey(data, "home")) detailOffset = 0;
+        else if (matchesKey(data, "end")) detailOffset = detailMaximum;
+        else if (up || down || pageUp || pageDown)
+          detailOffset = Math.max(
+            0,
+            Math.min(
+              detailMaximum,
+              detailOffset + (up ? -1 : down ? 1 : pageUp ? -detailViewport : detailViewport),
+            ),
+          );
+        else return; // Metadata browsing must never activate the hidden selection action.
+      } else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
         focus = (focus + (matchesKey(data, "shift+tab") ? focuses.length - 1 : 1)) % focuses.length;
       } else if (focus === 0) {
         if (keys.matches(data, "tui.select.confirm")) focus = 2;
@@ -225,7 +301,7 @@ export function createProfileModelPicker(
           reset();
         }
       } else return;
-      input.focused = focused && focus === 0;
+      input.focused = focused && focus === 0 && !details;
       requestRender();
     },
     invalidate() {
