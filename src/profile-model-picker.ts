@@ -93,7 +93,13 @@ export function createProfileModelPicker(
         safe(reason() ?? "Accessible in this session; profile authorization remains separate."),
         width,
       ).slice(0, 3);
-      const resultHeight = Math.max(1, height - 10 - reasonLines.length);
+      const contextLines = options.context.flatMap((line) => wrapTextWithAnsi(safe(line), width));
+      const fixedHeight = 9 + contextLines.length + reasonLines.length;
+      if (height <= fixedHeight) {
+        compact = true;
+        return ["Models · resize", `${cancel}: back`].slice(0, height).map(paint);
+      }
+      const resultHeight = height - fixedHeight;
       const start = Math.max(
         0,
         Math.min(selected - Math.floor(resultHeight / 2), list.length - resultHeight),
@@ -127,7 +133,7 @@ export function createProfileModelPicker(
       input.focused = focused && focus === 0;
       return [
         theme.fg("accent", safe(options.title)),
-        safe(options.context.join(" · ")),
+        ...contextLines,
         ...input.render(width),
         active("provider", `Provider: ${safe(providerLabel)} · ←/→ filter`),
         active("models", `Accessible models · ${list.length} matches · ↑/↓ browse`),
@@ -140,7 +146,12 @@ export function createProfileModelPicker(
           `Effort: ${effort ?? "not chosen"} · ←/→ choose · ${entry?.efforts.map((e) => e.effort).join(" / ") ?? "none"}`,
         ),
         ...reasonLines.map((line) => theme.fg(reason() ? "warning" : "muted", line)),
-        active("add", reason() ? "Select [disabled]" : `Select ${effort} (no automatic grants)`),
+        active(
+          "add",
+          reason()
+            ? "Select [disabled]"
+            : `${options.selectionLabel ?? "Select (no automatic grants)"} · ${effort}`,
+        ),
         active("refresh", "Refresh metadata · host snapshot only, no network refresh"),
         theme.fg("muted", `Tab: focus · Enter: choose · ${cancel}: back`),
       ]

@@ -17,12 +17,7 @@ import {
 } from "./profile-config.ts";
 import {
   bundledProfiles,
-  WRITE_TOOLS,
-  COORDINATION_ACTIONS,
   validateCustomRoleName,
-  loadProfileCatalog,
-  resolveProfileCatalog,
-  validateProfileSkills,
   type Profile,
   type ProfileCatalog,
 } from "./profiles.ts";
@@ -33,9 +28,13 @@ import {
   type ProfilePanelTheme,
 } from "./profile-presentation.ts";
 import { safe } from "./thread.ts";
-import { sameSelection, type ModelSelection } from "./model-policy.ts";
-import { profileModelLabel, type ProfileModelSource } from "./profile-model-catalog.ts";
-import { pickProfileModel } from "./profile-model-picker.ts";
+import { profileModelReason, type ProfileModelSource } from "./profile-model-catalog.ts";
+import { ProfileAutosaveController } from "./profile-autosave.ts";
+import {
+  createEditableProfileInspector,
+  type InspectorExit,
+  type StructuralAction,
+} from "./profile-inspector.ts";
 
 export type ProfileEditorView = {
   title: string;
@@ -72,7 +71,7 @@ export function createProfileEditorScreen(
       const confirm = safe(keys.getKeys("tui.select.confirm").join("/") || "Enter");
       compact = width < 24 || height < 12;
       if (compact)
-        return ["Profiles · resize", "Draft retained; no save", `${close}: back`]
+        return ["Profiles · resize", "Transaction retained", `${close}: back`]
           .slice(0, height)
           .map(paint);
       const inner = width - 4;
@@ -197,14 +196,6 @@ function editRole(draft: ProfileConfigDraft, name: string): Record<string, unkno
   const custom = (draft.value.customProfiles ??= {}) as Record<string, unknown>;
   return (custom[name] ??= {}) as Record<string, unknown>;
 }
-function candidateCatalog(draft: ProfileConfigDraft, options: ProfileDraftOptions): ProfileCatalog {
-  const catalog = draft.catalog;
-  catalog[draft.destination] = structuredClone(draft.value);
-  return {
-    ...catalog,
-    ...resolveProfileCatalog(catalog.global, catalog.project, options.availableSkills?.() ?? []),
-  };
-}
 function display(value: unknown): string {
   return value === undefined ? "<unset / inherited>" : JSON.stringify(value);
 }
@@ -304,176 +295,6 @@ export function profileSaveReview(
     ],
   };
 }
-function formView(
-  draft: ProfileConfigDraft,
-  name: string,
-  options: ProfileDraftOptions,
-  notice: string,
-): ProfileEditorView {
-  let catalog: ProfileCatalog | undefined;
-  let previewError: unknown;
-  try {
-    catalog = candidateCatalog(draft, options);
-  } catch (error) {
-    previewError = error;
-  }
-  const effective = catalog?.profiles.find((profile) => profile.name === name);
-  const source = catalog?.provenance[name] ??
-    draft.catalog.provenance[name] ?? {
-      source: draft.destination,
-      globalOverride: false,
-      projectOverride: false,
-    };
-  const ownDefinition = independent(draft, name);
-  const inherited = inheritedProfile(draft, name, options);
-  const raw = rawRole(draft.value, name);
-  return {
-    title: `Edit ${name} · ${draft.destination} · ${draft.dirty ? "unsaved" : "clean"}`,
-    choices: [
-      { value: "description", label: "Edit description" },
-      { value: "prompt", label: "Edit multiline prompt" },
-      ...(!ownDefinition
-        ? [
-            { value: "reset-description", label: "Reset description" },
-            { value: "reset-prompt", label: "Reset prompt" },
-            { value: "reset", label: "Reset whole override" },
-          ]
-        : []),
-      { value: "review", label: "Review / Save" },
-      { value: "destination", label: "Change destination" },
-      { value: "role", label: "Change role" },
-      { value: "back", label: "Back to resolved view" },
-      ...["tools", "skills", "spawn", "coordination", "models", "model", "prewalk", "fallback"].map(
-        (field) => ({ value: `field:${field}`, label: fieldLabels[field] }),
-      ),
-      ...(name === "general" ? [{ value: "field:leafTools", label: fieldLabels.leafTools }] : []),
-      { value: "create", label: "Create / copy custom role" },
-      ...(ownDefinition && !bundledNames.has(name)
-        ? [{ value: "delete", label: "Delete custom definition" }]
-        : []),
-      ...(source.source === "project"
-        ? [{ value: "ceiling", label: "Change local authority ceiling" }]
-        : []),
-      ...(draft.destination === "global"
-        ? [
-            { value: "ceilings", label: "Authorize project-role ceilings" },
-            { value: "registrations", label: "Register project-local spawn targets" },
-          ]
-        : []),
-    ],
-    lines: [
-      ...(notice ? [notice, ""] : []),
-      `Write destination: ${draft.destination}`,
-      `Exact path: ${draft.path}`,
-      `Definition source: ${source.source}${source.ceiling ? `; continuing ceiling: ${source.ceiling}` : ""}`,
-      `Overrides: global ${source.globalOverride ? "yes" : "no"}; project ${source.projectOverride ? "yes" : "no"}`,
-      "Callable tools: unknown. All changes are drafts until validated, reviewed and saved.",
-      ...(previewError
-        ? [
-            `Effective preview unavailable / invalid: ${String(previewError)}`,
-            "Raw controls remain editable. Correct the draft or discard it; Save still validates and rejects invalid policy.",
-          ]
-        : []),
-      ownDefinition
-        ? "Independent definition: instructions are required, not inherited from a copied role or ceiling."
-        : "Unset means inherit in this destination; empty text is an explicit override.",
-      "",
-      ...(["description", "prompt"] as const).flatMap((field) => [
-        field === "prompt" ? "Prompt" : "Description",
-        `Selected-layer value: ${Object.hasOwn(raw, field) ? display(raw[field]) : "<unset / inherited>"}`,
-        `Inherited baseline: ${ownDefinition ? "not applicable (independent definition)" : display(inherited?.[field])}`,
-        "Effective workspace value:",
-        effective?.[field] ?? "<effective preview unavailable>",
-        "",
-      ]),
-      ...Object.keys(fieldLabels)
-        .filter((field) => field !== "leafTools" || name === "general")
-        .flatMap((field) => [
-          fieldLabels[field],
-          `Selected-layer: ${display(raw[field])}`,
-          `Inherited baseline: ${ownDefinition ? "not applicable (independent definition)" : display(inherited?.[field as keyof Profile])}`,
-          `Effective: ${effective ? display(effective[field as keyof Profile]) : "<effective preview unavailable>"}`,
-          "",
-        ]),
-      "Project model/prewalk reset only removes this layer's key; it can re-inherit the operator setting, not disable it. Fallback alone supports explicit false. No null/off sentinel is invented.",
-      "Incoming local spawning requires an exact global projectSpawnTargets name/ceiling registration AND a separate parent spawn grant. Scope is all trusted projects using these operator settings, with independent project instructions. Root local launch needs no incoming registration.",
-      "Prompt dialog uses native multiline editing. Control characters are displayed safely; submitting replaces that field. Cancel leaves it unchanged.",
-    ],
-  };
-}
-const fieldLabels: Record<string, string> = {
-  tools: "Builtin tools",
-  skills: "Exact skill paths",
-  spawn: "Spawn targets",
-  coordination: "Coordination actions",
-  models: "Exact model allowlist",
-  model: "Default model",
-  prewalk: "Prewalk target",
-  fallback: "Ordered fallback chain",
-  leafTools: "General reviewed leaf tools",
-};
-const requiredArrays = ["tools", "skills", "spawn", "coordination"];
-function independent(draft: ProfileConfigDraft, name: string): boolean {
-  return (
-    !bundledNames.has(name) &&
-    (draft.destination === "global" || Object.hasOwn(rawRole(draft.value, name), "ceiling"))
-  );
-}
-function inheritedProfile(
-  draft: ProfileConfigDraft,
-  name: string,
-  options: ProfileDraftOptions,
-): Profile | undefined {
-  if (independent(draft, name)) return;
-  try {
-    return resolveProfileCatalog(
-      draft.destination === "global" ? {} : draft.catalog.global,
-      {},
-      options.availableSkills?.() ?? [],
-    ).profiles.find((profile) => profile.name === name);
-  } catch {
-    return;
-  }
-}
-function currentField(
-  draft: ProfileConfigDraft,
-  name: string,
-  field: string,
-  options: ProfileDraftOptions,
-): unknown {
-  const raw = rawRole(draft.value, name);
-  if (Object.hasOwn(raw, field)) return raw[field];
-  try {
-    return candidateCatalog(draft, options).profiles.find((p) => p.name === name)?.[
-      field as keyof Profile
-    ];
-  } catch {
-    return inheritedProfile(draft, name, options)?.[field as keyof Profile];
-  }
-}
-function fieldNotes(draft: ProfileConfigDraft, name: string, field: string): string[] {
-  return [
-    `${name}.${field} · ${draft.destination}`,
-    `Write path: ${draft.path}`,
-    `Selected-layer value: ${display(rawRole(draft.value, name)[field])}`,
-    "This dialog stages only. Back cancels this field's pending selection. Applying a list stores an explicit array; [] removes grants, while reset removes the layer key.",
-    ...(field === "skills"
-      ? [
-          "Exact paths become explicit grants, not future skill discovery. No skill is executed here.",
-        ]
-      : []),
-    ...(field === "leafTools"
-      ? [
-          "General only. Reviewed names assert trusted leaf code, not a sandbox; no reaching/tool-to-tool forwarding grants.",
-        ]
-      : []),
-    ...(["model", "prewalk"].includes(field)
-      ? [
-          "Reset removes this layer's key. A project may re-inherit the global setting; it has no model/prewalk off sentinel.",
-        ]
-      : []),
-  ];
-}
 async function finiteList(
   show: Show,
   title: string,
@@ -508,274 +329,6 @@ async function finiteList(
       ? selected.filter((item) => item !== value)
       : [...selected, value];
   }
-}
-async function exactList(
-  ctx: Pick<ExtensionCommandContext, "ui">,
-  show: Show,
-  draft: ProfileConfigDraft,
-  name: string,
-  field: string,
-  options: ProfileDraftOptions,
-): Promise<void> {
-  let values = [...((currentField(draft, name, field, options) ?? []) as string[])];
-  const reset = !(independent(draft, name) && requiredArrays.includes(field));
-  for (;;) {
-    const action = await show({
-      title: fieldLabels[field],
-      lines: [...fieldNotes(draft, name, field), ...values.map((value, i) => `${i + 1}. ${value}`)],
-      choices: [
-        { value: "back", label: "Back without changes" },
-        ...(reset ? [{ value: "reset", label: "Reset / inherit" }] : []),
-        { value: "apply", label: "Apply exact list" },
-        { value: "empty", label: "Explicit empty grant []" },
-        {
-          value: "add",
-          label: field === "skills" ? "Add exact absolute skill path" : "Add reviewed leaf name",
-        },
-        ...values.map((value, i) => ({ value: String(i), label: `Remove ${i + 1}: ${value}` })),
-      ],
-    });
-    if (!action || action === "back") return;
-    if (action === "reset") {
-      delete rawRole(draft.value, name)[field];
-      return;
-    }
-    if (action === "apply" || action === "empty") {
-      editRole(draft, name)[field] = action === "empty" ? [] : values;
-      return;
-    }
-    if (action === "add") {
-      const value = await ctx.ui.input(
-        field === "skills"
-          ? "Exact absolute skill file path (no trimming)"
-          : "Exact reviewed leaf tool name",
-      );
-      if (value !== undefined && value !== "") values.push(value);
-    } else values = values.filter((_, index) => index !== Number(action));
-  }
-}
-function authorityProfile(
-  draft: ProfileConfigDraft,
-  name: string,
-  options: ProfileDraftOptions,
-): Profile | undefined {
-  const layers = draft.catalog;
-  layers[draft.destination] = draft.value;
-  const ceiling = rawRole(draft.value, name).ceiling;
-  try {
-    return resolveProfileCatalog(
-      layers.global,
-      typeof ceiling === "string" ? layers.project : {},
-      options.availableSkills?.() ?? [],
-    ).profiles.find((p) => p.name === (ceiling ?? name));
-  } catch {
-    return draft.catalog.profiles.find((p) => p.name === (ceiling ?? name));
-  }
-}
-const selectionLabel = (selection: ModelSelection) =>
-  `${selection.provider}/${selection.id}:${selection.effort}`;
-async function modelField(
-  ctx: Pick<ExtensionCommandContext, "ui">,
-  show: Show,
-  draft: ProfileConfigDraft,
-  name: string,
-  field: string,
-  options: ProfileEditorOptions,
-): Promise<void> {
-  const notes = fieldNotes(draft, name, field);
-  const raw = rawRole(draft.value, name);
-  const grants = (currentField(draft, name, "models", options) ?? []) as ModelSelection[];
-  const authorized = authorityProfile(draft, name, options);
-  const metadata = (() => {
-    try {
-      return options.modelCatalog?.();
-    } catch {
-      return undefined;
-    }
-  })();
-  const label = (value: ModelSelection) =>
-    metadata
-      ? `${profileModelLabel(metadata, value)} · ${selectionLabel(value)}`
-      : `${selectionLabel(value)} · metadata unavailable; saved selection retained`;
-  const pick = (allowed?: readonly ModelSelection[], excluded?: readonly ModelSelection[]) =>
-    pickProfileModel(ctx, options.modelCatalog, {
-      title: `${name} · ${fieldLabels[field]}`,
-      context: [
-        `${draft.destination === "global" ? "Global · affects other workspaces" : "Project · operator authority only"}: ${draft.path}`,
-        "Selection stages a draft; explicit Save still required",
-      ],
-      allowed,
-      excluded,
-    });
-  if (field === "model" || field === "prewalk") {
-    const eligible =
-      field === "prewalk" && draft.destination === "project"
-        ? grants.filter((item) => !!authorized?.prewalk && sameSelection(item, authorized.prewalk))
-        : grants;
-    const action = await show({
-      title: fieldLabels[field],
-      lines: [
-        ...notes,
-        "Eligible exact selections come from the model allowlist. No implicit grants, aliases or effort coercion.",
-        "Fallback and prewalk cannot coexist. Make related changes explicitly; temporary invalid drafts remain editable.",
-        ...(currentField(draft, name, field, options)
-          ? [`Current: ${label(currentField(draft, name, field, options) as ModelSelection)}`]
-          : []),
-        ...eligible.map(label),
-      ],
-      choices: [
-        { value: "back", label: "Back without changes" },
-        { value: "reset", label: "Reset selected-layer setting" },
-        { value: "choose", label: "Browse accessible models / choose effort" },
-      ],
-    });
-    if (action === "reset") delete raw[field];
-    else if (action === "choose") {
-      const selected = await pick(eligible);
-      if (selected) editRole(draft, name)[field] = selected;
-    }
-    return;
-  }
-  const fallback = field === "fallback";
-  const current = currentField(draft, name, field, options);
-  let values = Array.isArray(current) ? ([...current] as ModelSelection[]) : [];
-  for (;;) {
-    const action = await show({
-      title: fieldLabels[field],
-      lines: [
-        ...notes,
-        fallback
-          ? "Ordered chain; false explicitly disables it. Projects may only keep an allowed subsequence, never add/reorder targets. Prewalk must be absent."
-          : "models grants exact overrides, not routing order. Unset permits physical-parent inheritance, not arbitrary overrides; [] denies every selection.",
-        "At most 64 rows. Unavailable entries are retained, not silently removed. Structural save validation does not prove auth/scope/effort/provider availability.",
-        ...values.map((item, i) => `${i + 1}. ${label(item)}`),
-      ],
-      choices: [
-        { value: "back", label: "Back without changes" },
-        { value: "reset", label: "Reset / inherit" },
-        { value: "apply", label: fallback ? "Apply ordered chain" : "Apply exact model grants" },
-        {
-          value: "disable",
-          label: fallback ? "Disable fallback (false)" : "Explicit empty grant []",
-        },
-        ...(values.length < 64
-          ? [
-              {
-                value: "add",
-                label: fallback ? "Append granted exact target" : "Add exact model grant",
-              },
-            ]
-          : []),
-        ...values.map((item, i) => ({ value: `row:${i}`, label: `${i + 1}. ${label(item)}` })),
-      ],
-    });
-    if (!action || action === "back") return;
-    if (action === "reset") {
-      delete rawRole(draft.value, name)[field];
-      return;
-    }
-    if (action === "disable") {
-      editRole(draft, name)[field] = fallback ? false : [];
-      return;
-    }
-    if (action === "apply") {
-      if (fallback && !values.length)
-        throw new Error(
-          "Fallback requires a nonempty chain; choose explicit Disable fallback instead",
-        );
-      editRole(draft, name)[field] = values;
-      return;
-    }
-    if (action === "add") {
-      let value: ModelSelection | undefined;
-      if (!fallback && draft.destination === "global") value = await pick(undefined, values);
-      else {
-        const choices = fallback
-          ? draft.destination === "project"
-            ? (authorized?.fallback ?? []).filter((item) =>
-                grants.some((grant) => sameSelection(grant, item)),
-              )
-            : grants
-          : (authorized?.models ?? []);
-        value = await pick(choices, values);
-      }
-      if (value) values.push(value);
-    } else {
-      const index = Number(action.slice("row:".length));
-      const row = await show({
-        title: `Exact row ${index + 1}`,
-        lines: [label(values[index]), "Removing/reordering is explicit. No model dispatch occurs."],
-        choices: [
-          { value: "back", label: "Back" },
-          { value: "remove", label: "Remove this row" },
-          ...(fallback && draft.destination === "global"
-            ? [
-                { value: "up", label: "Move earlier" },
-                { value: "down", label: "Move later" },
-              ]
-            : []),
-        ],
-      });
-      if (row === "remove") values.splice(index, 1);
-      const next = row === "up" ? index - 1 : row === "down" ? index + 1 : -1;
-      if (next >= 0 && next < values.length)
-        [values[index], values[next]] = [values[next], values[index]];
-    }
-  }
-}
-async function editField(
-  ctx: Pick<ExtensionCommandContext, "ui">,
-  show: Show,
-  draft: ProfileConfigDraft,
-  name: string,
-  field: string,
-  options: ProfileEditorOptions,
-): Promise<void> {
-  if (["models", "model", "prewalk", "fallback"].includes(field))
-    return modelField(ctx, show, draft, name, field, options);
-  if (field === "skills" || field === "leafTools")
-    return exactList(ctx, show, draft, name, field, options);
-  const targets = (
-    draft.destination === "global"
-      ? (draft.value.projectSpawnTargets ?? {})
-      : draft.catalog.projectSpawnTargets
-  ) as Record<string, string>;
-  const roles = [
-    ...bundledNames,
-    ...Object.keys(entries(draft.catalog.global)),
-    ...(draft.destination === "global" ? Object.keys(entries(draft.value)) : []),
-    ...Object.keys(targets),
-  ];
-  const authority =
-    draft.destination === "project"
-      ? authorityProfile(draft, name, options)
-      : bundledProfiles().find((p) => p.name === name);
-  const choices =
-    field === "tools"
-      ? [...(authority?.tools ?? (draft.destination === "global" ? WRITE_TOOLS : []))]
-      : field === "coordination"
-        ? [
-            ...(draft.destination === "global"
-              ? COORDINATION_ACTIONS
-              : (authority?.coordination ?? [])),
-          ]
-        : draft.destination === "global"
-          ? roles
-          : [...(authority?.spawn ?? [])];
-  const selected = await finiteList(
-    show,
-    fieldLabels[field],
-    fieldNotes(draft, name, field),
-    (currentField(draft, name, field, options) ?? []) as string[],
-    choices,
-    !(independent(draft, name) && requiredArrays.includes(field)),
-    (value) =>
-      field === "spawn" && Object.hasOwn(targets, value)
-        ? `${value} [registered:${targets[value]}; conditional trusted local]`
-        : value,
-  );
-  if (selected === "reset") delete rawRole(draft.value, name)[field];
-  else if (selected !== undefined) editRole(draft, name)[field] = selected;
 }
 async function registrations(
   ctx: Pick<ExtensionCommandContext, "ui">,
@@ -1054,13 +607,161 @@ function errorView(error: unknown, editable: boolean): ProfileEditorView {
   };
 }
 
-/** Command-only native interaction. Non-TUI callers keep the separate read-only envelope. */
+/** Preserved whole-layer transactions, only for lifecycle and structural authority changes.
+ * Ordinary instructions, permissions and model policy are exclusively item intents. */
+export async function runProfileStructuralTransaction(
+  ctx: Pick<ExtensionCommandContext, "ui">,
+  show: Show,
+  destination: ProfileDestination,
+  options: ProfileEditorOptions,
+  initialName: string,
+  action: StructuralAction,
+): Promise<string> {
+  let draft = await ProfileConfigDraft.open(destination, options);
+  let name = initialName;
+  let deletionUndo: Record<string, unknown> | undefined;
+  const change = async () => {
+    if (action === "create")
+      name = (await createRole(ctx, show, draft, initialName)) ?? initialName;
+    else if (action === "delete") deletionUndo = await stageDeletion(show, draft, name);
+    else if (action === "reset-override") {
+      if (
+        (await show({
+          title: "Reset whole override",
+          lines: [
+            `Remove the whole ${name} override in ${draft.path}. Inherited settings return; this is not Disable.`,
+          ],
+          choices: [
+            { value: "back", label: "Back without changes" },
+            { value: "reset", label: "Stage whole override reset" },
+          ],
+        })) === "reset"
+      )
+        draft.resetOverride(name);
+    } else if (action === "registrations") await registrations(ctx, show, draft);
+    else if (action === "ceilings") {
+      const value = await finiteList(
+        show,
+        "Operator project-role ceiling authorization",
+        [
+          "GLOBAL: all trusted projects; independent local authority, not a spawn grant.",
+          `Write path: ${draft.path}`,
+        ],
+        (draft.value.projectRoleCeilings ?? []) as string[],
+        [...bundledNames, ...Object.keys(entries(draft.value))],
+        true,
+      );
+      if (value === "reset") delete draft.value.projectRoleCeilings;
+      else if (value !== undefined) draft.value.projectRoleCeilings = value;
+    } else if (action === "ceiling") {
+      const value = await show({
+        title: "Change continuing authority ceiling",
+        lines: ["Authority only; no instruction/grant copying or automatic pruning."],
+        choices: [
+          { value: "back", label: "Back without changes" },
+          ...draft.catalog.projectRoleCeilings.map((value) => ({ value, label: value })),
+        ],
+      });
+      if (value && value !== "back") editRole(draft, name).ceiling = value;
+    }
+  };
+  await change();
+  while (draft.dirty) {
+    try {
+      const priorTargets = draft.catalog.projectSpawnTargets;
+      const nextTargets = (draft.value.projectSpawnTargets ?? {}) as Record<string, string>;
+      const repair =
+        action === "registrations"
+          ? [...bundledNames, ...Object.keys(entries(draft.value))].flatMap((role) =>
+              ((rawRole(draft.value, role).spawn ?? []) as string[])
+                .filter(
+                  (target) =>
+                    Object.hasOwn(priorTargets, target) &&
+                    priorTargets[target] !== nextTargets[target],
+                )
+                .map((target) => ({ role, target })),
+            )
+          : [];
+      const choice = await show({
+        title: `Advanced structural transaction · ${name}`,
+        lines: [
+          `Exact path: ${draft.path}`,
+          "Ordinary autosaves are drained and frozen. Only these explicit structural changes are staged.",
+          ...rawChanges(draft.original, draft.value),
+        ],
+        choices: [
+          { value: "back", label: "Discard structural transaction / return" },
+          { value: "review", label: "Review structural save" },
+          { value: "change", label: "Continue structural operation" },
+          ...(deletionUndo ? [{ value: "undo", label: "Undo deletion changes" }] : []),
+          ...repair.map(({ role, target }) => ({
+            value: `repair:${role}:${target}`,
+            label: `Remove ${role}.spawn reference to ${target}`,
+          })),
+        ],
+      });
+      if (!choice || choice === "back") {
+        if (
+          (await show({
+            title: "Discard structural transaction?",
+            lines: [
+              `Only unsaved structural changes in ${draft.path} are discarded. Earlier item saves remain.`,
+            ],
+            choices: [
+              { value: "keep", label: "Keep structural transaction" },
+              { value: "discard", label: "Discard structural changes" },
+            ],
+          })) === "discard"
+        )
+          return initialName;
+      } else if (choice === "change") await change();
+      else if (choice === "undo") {
+        draft.value = deletionUndo!;
+        deletionUndo = undefined;
+      } else if (choice.startsWith("repair:")) {
+        const [role, target] = choice.slice(7).split(":");
+        editRole(draft, role).spawn = ((rawRole(draft.value, role).spawn ?? []) as string[]).filter(
+          (item) => item !== target,
+        );
+      } else if (choice === "review") {
+        const candidate = await draft.validate();
+        if ((await show(profileSaveReview(draft, candidate))) === "save") {
+          await draft.save();
+          return draft.catalog.profiles.some((p) => p.name === name) ? name : "general";
+        }
+      }
+    } catch (error) {
+      const uncertain =
+        error instanceof ProfileConfigError &&
+        (error.stage === "conflict" || error.replacement !== "not-attempted");
+      let choice: string | undefined;
+      do {
+        choice = await show({
+          ...errorView(error, !uncertain),
+          choices: [
+            ...(!uncertain
+              ? [{ value: "keep", label: "Keep correcting structural transaction" }]
+              : []),
+            { value: "reload", label: "Abandon structural changes and Reload" },
+          ],
+        });
+      } while (uncertain && choice !== "reload");
+      if (choice === "reload") {
+        draft = await ProfileConfigDraft.open(destination, options);
+        return initialName;
+      }
+    }
+  }
+  return draft.catalog.profiles.some((p) => p.name === name) ? name : initialName;
+}
+
+/** Command-only native interaction; non-TUI callers retain their read-only envelope. */
 export async function runProfileEditor(
   ctx: Pick<ExtensionCommandContext, "mode" | "ui">,
   options: ProfileEditorOptions,
 ): Promise<void> {
   if (ctx.mode !== "tui") throw new Error("Profile editing requires native TUI mode");
-  const show = (view: ProfileEditorView) =>
+  const show: Show = (view) =>
     ctx.ui.custom<string | undefined>(
       (tui, theme, keys, done) =>
         createProfileEditorScreen(
@@ -1077,78 +778,62 @@ export async function runProfileEditor(
         blocked: { kind: "question", message: view.title },
       },
     );
-  const discard = async (draft: ProfileConfigDraft) =>
-    !draft.dirty ||
-    (await show({
-      title: "Unsaved profile draft",
-      lines: [
-        `Unsaved edits for ${draft.path}`,
-        "Keep editing retains the entire draft. Discard drops it without saving.",
-      ],
-      choices: [
-        { value: "keep", label: "Keep editing" },
-        { value: "discard", label: "Discard draft" },
-      ],
-    })) === "discard";
-  const load = async () => {
-    const current = await loadProfileCatalog(
-      options.cwd,
-      options.isProjectTrusted(),
-      options.operatorDir,
-      options.availableSkills?.() ?? [],
-    );
-    await validateProfileSkills(current.profiles, options.cwd, options.operatorDir);
-    return current;
-  };
   let catalog: ProfileCatalog;
   try {
-    catalog = await load();
+    catalog = (await ProfileConfigDraft.open("global", options)).catalog;
   } catch (error) {
     await show(errorView(error, false));
     return;
   }
   let name: string | undefined;
-  let draft: ProfileConfigDraft | undefined;
-  let page: "resolved" | "destination" | "form" = "resolved";
-  let notice = "";
-  let deletionUndo: Record<string, unknown> | undefined;
-  while (true) {
-    if (page === "resolved") {
-      const result = await ctx.ui.custom<string | undefined>(
-        (tui, theme, keys, done) =>
-          createProfileViewer(
-            catalog.profiles,
-            theme,
-            keys,
-            () => tui.requestRender(),
-            () => done(undefined),
-            () => Math.max(1, Math.floor(tui.terminal.rows * 0.9)),
-            { initialRole: name, edit: done, catalog, trusted: options.isProjectTrusted() },
-          ),
-        {
-          overlay: true,
-          overlayOptions: { width: "90%", maxHeight: "90%", anchor: "center" },
-          blocked: { kind: "question", message: "Inspect profiles or explicitly edit" },
-        },
+  let controller: ProfileAutosaveController | undefined;
+  const queueOptions = {
+    ...options,
+    checkSelection(target: Parameters<typeof profileModelReason>[1]) {
+      const reason = profileModelReason(
+        options.modelCatalog?.() ?? { entries: [], error: "Model metadata unavailable" },
+        target,
       );
-      if (!result) return;
-      name = result;
-      page = "destination";
-    }
-    if (page === "destination") {
-      const local = catalog.provenance[name!]?.source === "project";
+      if (reason) throw new Error(reason);
+    },
+  };
+  for (;;) {
+    if (!controller) {
+      if (!name) {
+        name = await ctx.ui.custom<string | undefined>(
+          (tui, theme, keys, done) =>
+            createProfileViewer(
+              catalog.profiles,
+              theme,
+              keys,
+              () => tui.requestRender(),
+              () => done(undefined),
+              () => Math.max(1, Math.floor(tui.terminal.rows * 0.9)),
+              { edit: done, catalog, trusted: options.isProjectTrusted() },
+            ),
+          {
+            overlay: true,
+            overlayOptions: { width: "90%", maxHeight: "90%", anchor: "center" },
+            blocked: { kind: "question", message: "Inspect profiles or explicitly edit" },
+          },
+        );
+        if (!name) return;
+      }
+      const local = catalog.provenance[name]?.source === "project";
       const destination = await show({
         title: "Choose write destination",
         lines: [
           `Role: ${name}`,
           `Global operator file: ${catalog.globalPath}`,
           `Project file: ${catalog.projectPath}`,
-          "Global edits affect other workspaces. Project edits require existing host trust and can only narrow authority.",
-          ...(local
-            ? ["This independent project-local definition cannot be edited in the global layer."]
-            : []),
+          "Global edits affect other workspaces. Project editing requires existing host trust; no trust is granted here.",
           ...(!options.isProjectTrusted()
-            ? ["Project editing disabled: workspace is untrusted. Trust is never changed here."]
+            ? ["Project editing disabled: workspace is untrusted"]
+            : []),
+          ...(local
+            ? [
+                "Project-local definition cannot be edited in Global; choose trusted Project explicitly.",
+              ]
             : []),
         ],
         choices: [
@@ -1160,171 +845,67 @@ export async function runProfileEditor(
         ],
       });
       if (!destination || destination === "back") {
-        page = "resolved";
+        name = undefined;
         continue;
       }
       try {
-        draft = await ProfileConfigDraft.open(destination as ProfileDestination, options);
-        catalog = draft.catalog;
-        page = "form";
+        controller = await ProfileAutosaveController.open(
+          destination as ProfileDestination,
+          queueOptions,
+        );
       } catch (error) {
         await show(errorView(error, false));
         continue;
       }
     }
-    if (!draft) continue;
-    try {
-      const action = await show(
-        deletionUndo
-          ? {
-              title: `Delete ${name} · staged`,
-              lines: [
-                `Definition deletion staged in ${draft.path}. Review / Save validates current references and tasks again.`,
-                notice,
-              ],
-              choices: [
-                { value: "review", label: "Review / Save" },
-                { value: "undo-delete", label: "Undo deletion changes" },
-                { value: "back", label: "Back to resolved view" },
-              ],
-            }
-          : formView(draft, name!, options, notice),
-      );
-      notice = "";
-      if (action?.startsWith("field:")) {
-        await editField(ctx, show, draft, name!, action.slice("field:".length), options);
-      } else if (action === "registrations") {
-        await registrations(ctx, show, draft);
-      } else if (action === "ceilings") {
-        const roles = [...bundledNames, ...Object.keys(entries(draft.value))];
-        const selected = await finiteList(
-          show,
-          "Operator project-role ceiling authorization",
-          [
-            "GLOBAL operator authorization only. This enables named ceilings for independent local definitions; it is not a spawn grant. Absence/[] disables local creation. Tightening can invalidate existing local definitions and will be validated against this trusted project.",
-            `Write path: ${draft.path}`,
-          ],
-          (draft.value.projectRoleCeilings ?? []) as string[],
-          roles,
-          true,
+    let dispose: (() => void) | undefined;
+    const result = await ctx.ui.custom<InspectorExit>(
+      (tui, theme, keys, done) => {
+        const screen = createEditableProfileInspector(
+          controller!,
+          {
+            modelCatalog: options.modelCatalog,
+            availableSkills: options.availableSkills?.(),
+            isProjectTrusted: options.isProjectTrusted,
+            initialRole: name,
+          },
+          tui,
+          theme,
+          keys,
+          () => tui.requestRender(),
+          done,
+          () => Math.max(1, Math.floor(tui.terminal.rows * 0.9)),
         );
-        if (selected === "reset") delete draft.value.projectRoleCeilings;
-        else if (selected !== undefined) draft.value.projectRoleCeilings = selected;
-      } else if (action === "ceiling") {
-        const selected = await show({
-          title: "Change continuing authority ceiling",
-          lines: [
-            "This changes authority only; instructions/grants are independent and are never auto-pruned or copied.",
-          ],
-          choices: [
-            { value: "back", label: "Back without changes" },
-            ...draft.catalog.projectRoleCeilings.map((role) => ({ value: role, label: role })),
-          ],
-        });
-        if (selected && selected !== "back") editRole(draft, name!).ceiling = selected;
-      } else if (action === "create") {
-        if (!(await discard(draft))) continue;
-        const fresh = await ProfileConfigDraft.open(draft.destination, options);
-        draft = fresh;
-        catalog = fresh.catalog;
-        if (!catalog.profiles.some((profile) => profile.name === name)) name = "general";
-        const created = await createRole(ctx, show, fresh, name!);
-        if (created) {
-          name = created;
-          notice =
-            "Independent definition staged. Choose usable tools explicitly; no spawn targets were added automatically.";
-        }
-      } else if (action === "delete") {
-        deletionUndo = await stageDeletion(show, draft, name!);
-      } else if (action === "undo-delete") {
-        draft.value = deletionUndo!;
-        deletionUndo = undefined;
-      } else if (action === "description" || action === "prompt") {
-        const current = currentField(draft, name!, action, options) ?? "";
-        const text =
-          action === "prompt"
-            ? await ctx.ui.editor(
-                `Prompt: ${safe(name!)} · submit replaces; cancel preserves`,
-                safe(String(current)),
-              )
-            : await ctx.ui.input(
-                `Replace description: ${safe(name!)} (empty allowed; cancel preserves)`,
-                safe(String(current)),
-              );
-        if (text !== undefined) editRole(draft, name!)[action] = text;
-      } else if (action === "reset-description" || action === "reset-prompt") {
-        delete rawRole(draft.value, name!)[action.slice("reset-".length)];
-      } else if (action === "reset") draft.resetOverride(name!);
-      else if (action === "review") {
-        const candidate = await draft.validate();
-        if ((await show(profileSaveReview(draft, candidate))) === "save") {
-          const saved = await draft.save();
-          catalog = saved.catalog;
-          notice = `Saved and verified: ${saved.path}`;
-          if (deletionUndo) {
-            await show({
-              title: "Saved profile deletion",
-              lines: [
-                notice,
-                "Local history remains unchanged. Other workspaces may still reference the deleted global role.",
-              ],
-              choices: [{ value: "back", label: "Back to resolved view" }],
-            });
-            deletionUndo = undefined;
-            draft = undefined;
-            name = undefined;
-            page = "resolved";
-          }
-        }
-      } else if (["destination", "role", "back", undefined].includes(action)) {
-        if (!(await discard(draft))) continue;
-        deletionUndo = undefined;
-        if (action === "role") {
-          const selected = await show({
-            title: "Choose profile",
-            lines: ["Changing role opens a fresh draft; no changes are saved implicitly."],
-            choices: catalog.profiles.map((profile) => ({
-              value: profile.name,
-              label: profile.name,
-            })),
-          });
-          if (selected) {
-            name = selected;
-            draft = undefined;
-            page = "destination";
-          } else {
-            draft = await ProfileConfigDraft.open(draft.destination, options);
-            catalog = draft.catalog;
-          }
-        } else {
-          draft = undefined;
-          catalog = await load();
-          page = action === "destination" ? "destination" : "resolved";
-        }
-      }
-    } catch (error) {
-      const retained = draft;
-      if (!retained) {
-        await show(errorView(error, false));
-        page = "resolved";
-        continue;
-      }
-      if ((await show(errorView(error, true))) === "reload" && (await discard(retained))) {
-        try {
-          const fresh = await ProfileConfigDraft.open(retained.destination, options);
-          draft = fresh;
-          deletionUndo = undefined;
-          catalog = fresh.catalog;
-          notice = "Reloaded current disk; review before editing.";
-          if (!catalog.profiles.some((profile) => profile.name === name)) {
-            draft = undefined;
-            name = undefined;
-            page = "resolved";
-          }
-        } catch (reloadError) {
-          await show(errorView(reloadError, false));
-        }
-      }
+        dispose = screen.dispose;
+        return screen;
+      },
+      {
+        overlay: true,
+        overlayOptions: { width: "90%", maxHeight: "90%", anchor: "center" },
+        blocked: { kind: "question", message: "Profile Inspector · item-change autosave" },
+      },
+    );
+    dispose?.();
+    await controller.settled();
+    if (!result) return;
+    name = result.profile;
+    if (result.action === "destination") {
+      catalog = controller.verified;
+      controller = undefined;
+      continue;
     }
+    try {
+      name = await runProfileStructuralTransaction(
+        ctx,
+        show,
+        controller.destination,
+        options,
+        name,
+        result.action,
+      );
+    } catch (error) {
+      await show(errorView(error, false));
+    }
+    await controller.reload();
   }
 }
