@@ -69,6 +69,8 @@ type Row = {
   help?: string;
   metadata?: string;
   warning?: string;
+  outcome?: string;
+  membership?: boolean;
 };
 const bundled = new Set(bundledProfiles().map((p) => p.name));
 const exact = (target: ModelSelection) =>
@@ -545,11 +547,30 @@ export function createEditableProfileInspector(
       } else if (id === "disable-chain" || id.endsWith(":remove")) {
         warning = `Keeps exact model grants. ${id === "disable-chain" || profile.fallback?.length === 1 ? `Disables fallback → ${profile.model ? compactModelLabel(profile.model) : "selected parent model"}; current permissions may deny dispatch.` : "Removes only this route target."}`;
       }
+      // Default to navigation: draft Resume/decision controls must never imply a save.
+      let outcome = "Open";
+      if (id.startsWith("reset:") || ["reset-list", "reset-chain"].includes(id))
+        outcome = "Reset and save";
+      else if (id.startsWith("grant:")) outcome = "Revoke grant and save";
+      else if (id.endsWith(":earlier") || id.endsWith(":later")) outcome = "Move and save";
+      else if (id.endsWith(":remove")) outcome = "Remove route and save";
+      else if (id === "disable-chain") outcome = "Disable chain and save";
+      else if (id === "empty-list") outcome = "Deny all and save";
+      else if (["description", "prompt", "add-exact"].includes(id)) outcome = "Edit text";
+      else if (
+        ["create", "delete", "ceiling", "ceilings", "registrations", "reset-override"].includes(id)
+      )
+        outcome = "Open structural review";
+      else if (id === "retry") outcome = "Retry saves";
+      else if (id === "revert") outcome = "Discard unsaved changes";
+      else if (id === "reload") outcome = "Reload allowed layers";
+      else if (id === "close") outcome = "Finish saves and close";
       result.push({
         id,
         text,
         run,
         warning,
+        outcome,
         reason:
           reason ??
           (!recovery && !mutable()
@@ -710,13 +731,26 @@ export function createEditableProfileInspector(
               ? "Project cannot mint grants; change destination to Global"
               : undefined,
         );
-        for (const target of grants)
+        for (const [index, target] of grants.entries()) {
+          const id = `grant:${exact(target)}`;
+          const removalReason = profileGrantRemovalReason(profile, target);
           action(
-            `grant:${exact(target)}`,
-            `Remove grant: ${modelLabel(target)}`,
+            id,
+            `Remove grant: ${index + 1} · ${compactModelLabel(target)}`,
             () => send({ ...identity(), field: "models", action: "revoke", target }),
-            profileGrantRemovalReason(profile, target),
+            removalReason,
           );
+          Object.assign(result.at(-1)!, {
+            label: `Remove grant: ${index + 1}`,
+            value: `${compactModelLabel(target)}${removalReason ? ` [disabled: ${removalReason}]` : ""}`,
+            help: "Revoke only this exact grant and save. j/k scroll full target and warning; routing-required grants stay disabled.",
+          });
+          if (activeId === id) {
+            info(`Exact target: ${target.provider}/${target.id} · ${target.effort}`);
+            const reason = profileModelReason(metadata(), target);
+            if (reason) info(`Warning: ${reason}`, `unavailable:${id}`);
+          }
+        }
       } else {
         const values = (raw[listField] ?? profile[listField] ?? []) as readonly string[];
         const authorityName = profile.projectCeiling ?? name;
@@ -756,6 +790,7 @@ export function createEditableProfileInspector(
                 item,
               }),
           );
+          Object.assign(result.at(-1)!, { membership: true, outcome: "Toggle and save" });
         }
         if (listField === "skills" || listField === "leafTools") {
           const draft = draftOf(listField);
@@ -816,6 +851,7 @@ export function createEditableProfileInspector(
           value: `${item.value}${state ? ` · ${state}` : ""}`,
           metadata: `${fields.some((f) => Array.isArray(raw[f]) && (raw[f] as unknown[]).length === 0) ? "explicit empty · " : ""}${inheritance}`,
           help: profileSettingHelp[key],
+          outcome: "Open setting",
           run: () => {
             panel = key;
             panelReturn = key;
@@ -876,7 +912,7 @@ export function createEditableProfileInspector(
             label: index === 0 ? "Default" : `↳ Fallback ${index}`,
             value: compactModelLabel(target),
             model: target,
-            help: `Exact: ${target.provider}/${target.id} · ${target.effort}. Enter opens this target’s controls.`,
+            help: `Exact: ${target.provider}/${target.id} · ${target.effort}. Open this target for controls.`,
           });
           if (targetPanel !== id) continue;
           info(`Exact target: ${target.provider}/${target.id} · ${target.effort}`);
@@ -1089,7 +1125,8 @@ export function createEditableProfileInspector(
     );
     return result;
   };
-  return {
+  let renderWidth = 0;
+  const component: Component & Focusable & { dispose: () => void } = {
     capturesViewportInput: true,
     get focused() {
       return focused;
@@ -1101,11 +1138,14 @@ export function createEditableProfileInspector(
     dispose: unsubscribe,
     render(width) {
       width = Math.max(0, width);
-      const cancel = safe(keys.getKeys("tui.select.cancel").join("/") || "unbound");
-      const confirm = safe(keys.getKeys("tui.select.confirm").join("/") || "unbound");
-      const submit = safe(keys.getKeys("tui.input.submit").join("/") || "unbound");
+      renderWidth = width;
       const height = Math.max(1, Math.floor(availableRows()));
       const paint = profileRowPaint(theme, width);
+      const binding = (action: Parameters<typeof keys.getKeys>[0]) =>
+        safe(keys.getKeys(action).join("/") || "unbound");
+      const confirm = binding("tui.select.confirm");
+      const cancel = binding("tui.select.cancel");
+      const submit = binding("tui.input.submit");
       compact = width < 32 || height < 16;
       if (compact) {
         visible.clear();
@@ -1197,26 +1237,27 @@ export function createEditableProfileInspector(
         const spans = indexed.map((item) => {
           const from = start;
           start += item.lines.length;
-          return { ...item, from, to: start };
+          return { ...item, from };
         });
         maximum = Math.max(0, start - viewport);
         const active = spans.find(({ row }) => row.id === activeId);
         if (follow && focus === "settings" && active) {
           if (active.from < offset) offset = active.from;
-          else if (active.to > offset + viewport) offset = Math.max(0, active.to - viewport);
+          else if (active.from >= offset + viewport) offset = active.from;
         }
         offset = Math.max(0, Math.min(maximum, offset));
         for (const span of spans)
-          if (span.from >= offset && span.to <= offset + viewport && span.row.run)
+          if (span.from >= offset && span.from < offset + viewport && span.row.run)
             visible.add(span.row.id);
         content = spans.flatMap((span) => span.lines).slice(offset, offset + viewport);
         follow = false;
       }
+      const selectedRow = rows.find((r) => r.id === activeId);
       const selectedHelp =
-        rows.find((r) => r.id === activeId)?.help ??
+        (selectedRow?.reason ? `Disabled: ${selectedRow.reason}` : selectedRow?.help) ??
         (panel
           ? profileSettingHelp[panel]
-          : "Enter: open selected setting. Browsing never changes permissions.");
+          : "Tab rail/settings · ↑↓ select · 1–4 groups. Browsing never changes permissions.");
       const help = controller.failure
         ? `${controller.failure.intent.profile}.${controller.failure.intent.field}: Not saved · ${controller.pending.length} unsaved · ${controller.failure.recovery === "reload" ? "Reload required" : "Retry / Revert available"}${drafts.size ? ` · ${drafts.size} drafts retained; Resume below` : ""}`
         : controller.reloadError
@@ -1276,6 +1317,11 @@ export function createEditableProfileInspector(
               : controller.status
       }${drafts.size ? ` · ${drafts.size} unsaved draft${drafts.size === 1 ? "" : "s"}` : ""}`;
       const mode = controller.status === "read-only" ? "Read-only" : "Editing";
+      const activation = selectedRow?.reason ? "Disabled" : (selectedRow?.outcome ?? "Open");
+      const hint =
+        focus === "rail"
+          ? `Tab / ${confirm}: settings · ↑↓ profiles · ${cancel}: back/close`
+          : `${confirm}${selectedRow?.membership && !selectedRow.reason ? " / Space" : ""}: ${activation} · Tab focus · ${cancel}: ${panel || listField ? "back" : "close"}`;
       return [
         paint(`╭${cell(` Subagent Profiles / ${safe(name)} · ${label} `, width - 2)}╮`),
         row(
@@ -1287,15 +1333,16 @@ export function createEditableProfileInspector(
           child
             ? textEdit
               ? `${!mutable() ? "Paused · Tab: keep draft" : textEdit.input instanceof Input ? `${submit} / Tab: commit` : `${submit}: commit · Tab: keep draft`} · ${cancel}: discard text`
-              : "Catalog · Tab focus · Esc back"
+              : `Catalog · Tab focus · ${cancel}: back`
             : decision
               ? `↑↓ choose · ${confirm} select · ${cancel} keep drafts`
-              : "Tab rail/settings · ↑↓ · Enter open · 1–4 groups · Esc back/close",
+              : hint,
         ),
         paint("╰" + "─".repeat(width - 2) + "╯"),
       ];
     },
     handleInput(data) {
+      component.render(renderWidth);
       if (compact) {
         if (keys.matches(data, "tui.select.cancel")) {
           // Resize never changes Escape into a close/commit of hidden unfinished input.
@@ -1379,7 +1426,12 @@ export function createEditableProfileInspector(
             ]?.id ?? "";
         }
         follow = true;
-      } else if (keys.matches(data, "tui.select.confirm")) {
+      } else if (
+        keys.matches(data, "tui.select.confirm") ||
+        (data === " " &&
+          focus === "settings" &&
+          rows.some((row) => row.id === activeId && row.membership))
+      ) {
         const row = rows.find((row) => row.id === activeId);
         if (focus === "rail") focus = "settings";
         else if (row && visible.has(row.id)) {
@@ -1428,4 +1480,5 @@ export function createEditableProfileInspector(
       child?.invalidate();
     },
   };
+  return component;
 }

@@ -188,13 +188,16 @@ export function createProfileViewer(
   let follow = true;
   let visibleSettings = new Set<ProfileSetting>();
   const scrollPositions = new Map<string, number>();
-  return {
+  let renderWidth = 0;
+  const component: Component = {
     capturesViewportInput: true,
     render(width) {
       width = Math.max(0, width);
+      renderWidth = width;
+      visibleSettings.clear();
       const height = Math.max(1, Math.floor(availableRows()));
-      const close = keys.getKeys("tui.select.cancel").join("/") || "Esc";
-      const confirm = safe(keys.getKeys("tui.select.confirm").join("/") || "Enter");
+      const close = keys.getKeys("tui.select.cancel").join("/") || "unbound";
+      const confirm = safe(keys.getKeys("tui.select.confirm").join("/") || "unbound");
       const paint = profileRowPaint(theme, width);
       const fallback = () =>
         [`Profiles · ${safe(close)}: close`, "Resize for details"].slice(0, height).map(paint);
@@ -207,7 +210,7 @@ export function createProfileViewer(
       const footer = [
         `Tab: ${focus} · ↑↓ ${focus === "settings" && panel ? "scroll" : "select"} · j/k scroll · PgUp/Dn · Home/End`,
         "1 Profile · 2 Model · 3 Access · 4 Advanced",
-        `${confirm}: open · ${options.edit ? "e: edit · " : ""}${safe(close)}: back/close · callable tools unknown here`,
+        `${confirm}: ${panel ? "read-only" : focus === "profiles" ? "settings" : "open"} · ${options.edit ? "e: edit · " : ""}${safe(close)}: back/close · callable tools unknown here`,
       ].flatMap((line) => wrapTextWithAnsi(line, inner));
       // Frames, divider and hints are reserved before assigning any viewport rows.
       const bodyHeight = height - 3 - footer.length;
@@ -356,7 +359,7 @@ export function createProfileViewer(
           count += rendered.length;
           if (follow && key === setting && focus === "settings") {
             if (from < offset) offset = from;
-            else if (count > offset + viewport) offset = Math.max(0, count - viewport);
+            else if (from >= offset + viewport) offset = from;
           }
           return rendered;
         });
@@ -372,7 +375,7 @@ export function createProfileViewer(
                 metadata(item.key),
               ).length + 1
             : 2;
-          if (item.key && index >= offset && index + size <= offset + viewport)
+          if (item.key && index >= offset && index < offset + viewport)
             visibleSettings.add(item.key);
           index += size;
         }
@@ -392,7 +395,7 @@ export function createProfileViewer(
             wrapTextWithAnsi(
               safe(
                 panel
-                  ? "Read-only detail · Esc returns to the selected setting."
+                  ? `Read-only detail · ${safe(close)} returns to the selected setting.`
                   : profileSettingHelp[setting],
               ),
               rightWidth,
@@ -435,6 +438,7 @@ export function createProfileViewer(
       ];
     },
     handleInput(data) {
+      component.render(renderWidth);
       if (keys.matches(data, "tui.select.cancel")) {
         if (panel) {
           panel = undefined;
@@ -446,6 +450,7 @@ export function createProfileViewer(
       }
       if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
         focus = focus === "profiles" ? "settings" : "profiles";
+        follow = true;
         requestRender();
         return;
       }
@@ -460,8 +465,10 @@ export function createProfileViewer(
       }
       if (keys.matches(data, "tui.select.confirm")) {
         if (compact) return;
-        if (focus === "profiles") focus = "settings";
-        else if (!panel && visibleSettings.has(setting)) {
+        if (focus === "profiles") {
+          focus = "settings";
+          follow = true;
+        } else if (!panel && visibleSettings.has(setting)) {
           panel = setting;
           offset = 0;
         }
@@ -505,4 +512,5 @@ export function createProfileViewer(
     },
     invalidate() {},
   };
+  return component;
 }

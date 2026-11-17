@@ -11,6 +11,7 @@ import {
   backgroundAnsi,
   type TUI,
   type Component,
+  type KeybindingsManager,
 } from "@earendil-works/pi-tui";
 import type { ExtensionCommandContext, ThemeStyle } from "@earendil-works/pi-coding-agent";
 import {
@@ -133,6 +134,7 @@ async function inspector(
   project?: unknown,
   destination: "global" | "project" = "global",
   initialRole?: string,
+  bindings: Pick<KeybindingsManager, "matches" | "getKeys"> = keys,
 ) {
   const f = await files(t, global, project);
   let metadata = models;
@@ -159,7 +161,7 @@ async function inspector(
     { modelCatalog: () => metadata, isProjectTrusted: f.options.isProjectTrusted, initialRole },
     tui,
     theme,
-    keys,
+    bindings,
     () => {
       renders++;
     },
@@ -1136,6 +1138,8 @@ test("paused mutations still allow read-only nested target and delegation inspec
   f.open("Delegation");
   f.activate("Spawn targets (spawn):");
   assert.match(f.render(), /\[disabled: Read-only\]/);
+  f.go("[x] scout");
+  f.input(" ");
   assert.equal(f.controller.pending.length, 1);
   assert.equal((await f.disk()).general.description, undefined);
 });
@@ -1246,7 +1250,7 @@ test("production overlay retains eligible results and confirmation when mixed hi
   assert.deepEqual((await f.disk()).general.fallback, [a, b]);
 });
 
-test("physical 80×28 Global Add uses the production 90% overlay and accepts every supported effort", async (t) => {
+test("physical 80×24 Global Add uses the production 90% overlay and accepts every supported effort", async (t) => {
   for (const [index, effort] of EFFORTS.entries())
     await t.test(effort, async (t) => {
       const f = await inspector(t);
@@ -1261,7 +1265,7 @@ test("physical 80×28 Global Add uses the production 90% overlay and accepts eve
           },
         ],
       });
-      f.resize(Math.floor(80 * 0.9), Math.floor(28 * 0.9));
+      f.resize(Math.floor(80 * 0.9), Math.floor(24 * 0.9));
       f.open("Models");
       f.activate("Add to chain / Add and grant");
       assert.doesNotMatch(f.render(), /Models · resize/);
@@ -1606,4 +1610,142 @@ test("frozen multiline native submit preserves exact whitespace; confirmed draft
   assert.doesNotMatch(f.render(), /Resume Global|unsaved draft/);
   f.activate("Close · finish verified saves first");
   assert.equal(f.exit().exited, true);
+});
+
+test("baseline long exact grant has a bounded revoke label and readable full identity, leaving unrelated grants", async (t) => {
+  const long = {
+    provider: "fixture",
+    id: "long-" + "x".repeat(140) + "終".repeat(240),
+    effort: "off" as const,
+  };
+  const f = await inspector(t, { general: { models: [long, a], tools: [] } });
+  f.resize(72, 21);
+  f.open("Advanced");
+  f.activate("Exact model grants:");
+  f.go("Remove grant:");
+  assert.match(f.render(), /› Remove grant:/);
+  let all = "";
+  for (let i = 0; i < 100; i++) {
+    all += f.render().split("\n")[5];
+    f.input("j");
+  }
+  assert.ok(all.replace(/[\s│]/g, "").includes(long.id));
+  f.go("Remove grant:");
+  f.input("\r");
+  await f.controller.settled();
+  assert.deepEqual((await f.disk()).general.models, [a]);
+});
+
+test("representative profile/model component checkpoint at production baseline, wide and subminimum restore", async (t) => {
+  const f = await inspector(t, { general: { models: [a], fallback: [a] } });
+  f.setMetadata({
+    entries: [
+      { ...models.entries[0], efforts: [{ effort: "off" }] },
+      models.entries[1],
+      {
+        ...models.entries[0],
+        id: "scope",
+        efforts: [{ effort: "off", reason: "Outside current session scope" }],
+      },
+      {
+        ...models.entries[0],
+        id: "unavailable",
+        efforts: [{ effort: "off", reason: "Unavailable metadata/access " + "detail ".repeat(50) }],
+      },
+    ],
+  });
+  for (const [width, height] of [
+    [72, 21],
+    [90, 27],
+  ]) {
+    f.resize(width, height);
+    f.open("Models");
+    f.activate("Add to chain / Add and grant");
+    assert.doesNotMatch(f.render(), /Models · resize/);
+    assert.match(f.render(), /Friendly Beta/);
+    f.input("\x1bOP");
+    assert.match(f.render(), /Model details/);
+    f.input("\x1b", "down", "\r", "\x1b[C", "\r");
+    const ready = f.render();
+    assert.match(ready, /Add and grant/);
+    f.resize(54, 14);
+    assert.match(f.render(), /resize/);
+    f.input("\r");
+    assert.equal(f.controller.pending.length, 0);
+    f.resize(width, height);
+    assert.match(f.render(), /Add and grant/);
+    f.input("\x1b");
+    assert.equal(f.controller.pending.length, 0);
+  }
+  assert.deepEqual((await f.disk()).general.fallback, [a]);
+});
+
+test("checkbox Space is a once-only autosave alias; contextual hints and configured confirm stay truthful", async (t) => {
+  const remapped = {
+    matches: (data: string, action: string) =>
+      action === "tui.select.confirm" ? data === "\x07" : keys.matches(data, action),
+    getKeys: (action: string) =>
+      action === "tui.select.confirm"
+        ? ["ctrl+g" as const]
+        : action === "tui.input.submit"
+          ? ["enter" as const]
+          : ["escape" as const],
+  };
+  const f = await inspector(
+    t,
+    { general: { tools: ["read"], models: [a] } },
+    {},
+    "global",
+    undefined,
+    remapped,
+  );
+  f.resize(72, 21);
+  assert.match(f.render(), /ctrl\+g: Open setting/);
+  f.go("Tools");
+  f.input("\x07");
+  f.go("[x] read");
+  assert.match(f.render(), /Space.*Toggle and save/);
+  let enqueued = 0;
+  const enqueue = f.controller.enqueue.bind(f.controller);
+  f.controller.enqueue = (intent) => {
+    enqueued++;
+    return enqueue(intent);
+  };
+  f.input(" ");
+  await f.controller.settled();
+  assert.equal(enqueued, 1);
+  assert.deepEqual((await f.disk()).general.tools, []);
+  f.input("\x07");
+  await f.controller.settled();
+  assert.equal(enqueued, 2);
+  assert.deepEqual((await f.disk()).general.tools, ["read"]);
+  f.input("down", "up");
+  assert.equal(enqueued, 2);
+  for (let i = 0; i < 20; i++) f.input("j");
+  f.input(" "); // A scrolled-away selected checkbox is not an actionable footprint.
+  assert.equal(enqueued, 2);
+  f.go("Reset tools to inherited");
+  assert.match(f.render(), /ctrl\+g: Reset and save/);
+  f.input(" ");
+  assert.equal(enqueued, 2);
+  f.resize(54, 14);
+  f.screen.handleInput?.(" ");
+  f.screen.handleInput?.("\x07");
+  assert.equal(enqueued, 2);
+  f.resize(72, 21);
+  f.input("1");
+  f.go("Models");
+  f.input(" ");
+  assert.doesNotMatch(f.render(), /Add to chain|Search:/);
+  assert.equal(enqueued, 2);
+  f.go("Description");
+  f.input("\x07");
+  assert.match(f.render(), /ctrl\+g: Edit text/);
+  f.go("Description");
+  f.input("\x07");
+  assert.match(f.render(), /enter.*commit/);
+  f.input(" ", "j", "k", "?");
+  assert.match(f.render(), / j k\?| jk\?/);
+  f.input("\x1b");
+  assert.equal(enqueued, 2);
 });

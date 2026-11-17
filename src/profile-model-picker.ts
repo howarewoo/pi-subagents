@@ -84,7 +84,8 @@ export function createProfileModelPicker(
     effort = undefined;
     notice = "";
   };
-  return {
+  let renderWidth = 0;
+  const component: Component & Focusable = {
     capturesViewportInput: true,
     get focused() {
       return focused;
@@ -95,9 +96,10 @@ export function createProfileModelPicker(
     },
     render(width) {
       width = Math.max(0, width);
+      renderWidth = width;
       const height = Math.max(1, Math.floor(availableRows()));
       const paint = profileRowPaint(theme, width);
-      const cancel = safe(keys.getKeys("tui.select.cancel").join("/") || "Esc");
+      const cancel = safe(keys.getKeys("tui.select.cancel").join("/") || "unbound");
       compact = width < 32 || height < 14;
       if (compact)
         return ["Models · resize", "Saved entries retained", `${cancel}: back`]
@@ -112,6 +114,16 @@ export function createProfileModelPicker(
         return `${focuses[focus] === name && focused ? "›" : " "} ${theme.style(label, { fg: focuses[focus] === name ? "accent" : "text", bold: true })}${text.slice(label.length)}`;
       };
       const disabledReason = reason();
+      const confirm = safe(keys.getKeys("tui.select.confirm").join("/") || "unbound");
+      const outcome = [
+        "results",
+        "filter ←/→",
+        "effort",
+        "confirmation",
+        disabledReason ? "disabled" : "select",
+        "refresh",
+      ][focus];
+      const footer = `Tab focus · ${focus === 1 ? outcome : `${confirm}: ${outcome}`} · F1 details · ${cancel} back`;
       const reasonLines = wrapTextWithAnsi(
         safe(
           notice ||
@@ -125,9 +137,11 @@ export function createProfileModelPicker(
         catalog.entries.find((item) => item.provider === provider)?.providerLabel ??
         "All providers";
       input.focused = focused && focus === 0 && !details;
+      const hidden = matches().filter((item) => !eligible(item));
       if (details) {
         const lines = [
           ...options.context,
+          ...(catalog.error ? [catalog.error] : []),
           "",
           entry ? `ID: ${entry.provider}/${entry.id}` : "No selected model",
           "",
@@ -137,9 +151,21 @@ export function createProfileModelPicker(
           ) ?? ["None"]),
           "",
           `Selected effort: ${effort ?? "not chosen"}`,
+          options.selectionLabel ?? "Select (no automatic grants)",
           disabledReason ?? "Accessible in this session; profile authorization remains separate.",
           "",
           "Metadata Refresh rereads the host snapshot only; no network refresh.",
+          "",
+          "Hidden matching models (exact reasons)",
+          ...hidden.flatMap((item) => [
+            `ID: ${item.provider}/${item.id}`,
+            ...(item.efforts.length
+              ? item.efforts.map(
+                  ({ effort }) =>
+                    `${effort}: ${profileModelPickReason(catalog, { provider: item.provider, id: item.id, effort }, options) ?? "Eligible"}`,
+                )
+              : ["No supported efforts"]),
+          ]),
         ].flatMap((line) => wrapTextWithAnsi(safe(line), width));
         detailViewport = height - 4;
         detailMaximum = Math.max(0, lines.length - detailViewport);
@@ -153,7 +179,7 @@ export function createProfileModelPicker(
           theme.fg("muted", `↑/↓ · j/k · PgUp/Dn scroll · F1/${cancel}: back`),
         ].map(paint);
       }
-      const prefix = [
+      let prefix = [
         theme.style(safe(options.title), { fg: "accent", bold: true }),
         ...contextLines.map((line) => theme.fg("muted", line)),
         "",
@@ -162,7 +188,6 @@ export function createProfileModelPicker(
         "",
         active("models", `Models: ${list.length} matches · ↑/↓ browse`),
       ];
-      const hidden = matches().filter((item) => !eligible(item));
       const hiddenReasons = new Set(
         hidden.flatMap((item) =>
           item.efforts.length
@@ -183,7 +208,7 @@ export function createProfileModelPicker(
             : ["no supported efforts"],
         ),
       );
-      const suffix = [
+      let suffix = [
         ...(hidden.length
           ? wrapTextWithAnsi(
               `${hidden.length} model${hidden.length === 1 ? "" : "s"} hidden: ${[...hiddenReasons].join(", ")}.`,
@@ -212,10 +237,7 @@ export function createProfileModelPicker(
           width,
         ),
         active("refresh", "Refresh metadata · host snapshot only, no network refresh"),
-        theme.fg(
-          "muted",
-          `↑↓: browse · Tab: focus · Enter: choose · F1: details · ${cancel}: back`,
-        ),
+        ...wrapTextWithAnsi(footer, width).map((line) => theme.fg("muted", line)),
       ];
       // Reclaim spacers before hiding otherwise usable results in a short overlay.
       for (const block of [suffix, prefix]) {
@@ -225,10 +247,40 @@ export function createProfileModelPicker(
           block.splice(spacer, 1);
         }
       }
+      if (prefix.length + suffix.length >= height) {
+        // Diagnostics belong in F1 before they take the last interactive result row.
+        prefix = [
+          theme.style(safe(options.title), { fg: "accent", bold: true }),
+          ...contextLines.slice(0, 3).map((line) => theme.fg("muted", line)),
+          ...input.render(width),
+          active("provider", `Provider: ${safe(providerLabel)} · ←/→ filter`),
+          active(
+            "models",
+            `Models: ${list.length} matches${hidden.length ? ` · ${hidden.length} hidden (F1)` : ""} · ↑/↓ browse`,
+          ),
+        ];
+        suffix = [
+          active(
+            "effort",
+            `Effort: ${effort ?? "not chosen"} · ←/→ choose · ${entry?.efforts.length ?? 0} supported`,
+          ),
+          theme.fg(notice || disabledReason ? "warning" : "muted", reasonLines[0] ?? ""),
+          active(
+            "add",
+            disabledReason
+              ? "Select [disabled]"
+              : `${options.selectionLabel ?? "Select (no automatic grants)"} · ${effort}`,
+          ),
+          active("refresh", "Refresh metadata · host snapshot only, no network"),
+          theme.fg("muted", footer),
+        ];
+      }
       const fixedHeight = prefix.length + suffix.length;
       if (height <= fixedHeight) {
         compact = true;
-        return ["Models · resize", `${cancel}: back`].slice(0, height).map(paint);
+        return ["Models · resize (80×24 terminal baseline)", `${cancel}: back`]
+          .slice(0, height)
+          .map(paint);
       }
       const resultHeight = height - fixedHeight;
       const start = Math.max(
@@ -251,7 +303,7 @@ export function createProfileModelPicker(
             safe(
               catalog.error ??
                 (hidden.length
-                  ? "All matching models are hidden. See reasons below."
+                  ? "All matching models are hidden. F1: reasons."
                   : catalog.entries.length
                     ? "No matching models. Change search/provider."
                     : "No accessible physical models in host metadata."),
@@ -263,6 +315,7 @@ export function createProfileModelPicker(
       return [...prefix, ...results, ...suffix].map(paint);
     },
     handleInput(data) {
+      component.render(renderWidth);
       if (keys.matches(data, "tui.select.cancel")) {
         if (details) {
           details = false;
@@ -366,6 +419,7 @@ export function createProfileModelPicker(
       input.invalidate();
     },
   };
+  return component;
 }
 
 export function pickProfileModel(

@@ -583,3 +583,72 @@ test("intermediate-height resize-only viewer cannot activate a hidden edit desti
   viewer.handleInput!("e");
   assert.deepEqual(edited, ["general"]);
 });
+
+test("pane entry follows a bounded label, not its oversized value or spacer; resize rechecks activation", () => {
+  let height = 21;
+  const viewer = createProfileViewer(
+    [{ ...bundledProfiles()[0], description: "long 終 value ".repeat(180) }],
+    theme,
+    keys,
+    () => {},
+    () => {},
+    () => height,
+  );
+  viewer.render(72);
+  viewer.handleInput!("\x1b[F");
+  viewer.render(72);
+  viewer.handleInput!("\t");
+  const selected = viewer.render(72).join("\n");
+  assert.match(selected, /› Description/);
+  viewer.handleInput!("\r");
+  assert.match(viewer.render(72).join("\n"), /Read-only detail/);
+  viewer.handleInput!("\x1b");
+  viewer.render(72);
+  height = 6; // No intervening render: input must not trust the previous visible set.
+  viewer.handleInput!("\r");
+  height = 21;
+  assert.doesNotMatch(viewer.render(72).join("\n"), /Read-only detail/);
+});
+
+test("viewer hints report remapped and unbound selection/cancel rather than invented Enter/Escape", () => {
+  const viewer = createProfileViewer(
+    bundledProfiles(),
+    theme,
+    {
+      matches: (data, action) =>
+        action === "tui.select.confirm"
+          ? data === "\x07"
+          : action === "tui.select.cancel"
+            ? data === "\x11"
+            : keys.matches(data, action),
+      getKeys: (action) => (action === "tui.select.confirm" ? [] : ["ctrl+q"]),
+    },
+    () => {},
+    () => {},
+    () => 21,
+  );
+  assert.match(viewer.render(72).join("\n"), /unbound: settings/);
+  assert.match(viewer.render(72).join("\n"), /ctrl\+q: back\/close/);
+  assert.doesNotMatch(viewer.render(72).join("\n"), /Enter|Esc/);
+});
+
+test("a visible label opens even when its wrapped value or trailing spacer cannot fit", () => {
+  for (const [width, height] of [
+    [72, 15],
+    [54, 18],
+  ]) {
+    const viewer = createProfileViewer(
+      bundledProfiles(),
+      theme,
+      keys,
+      () => {},
+      () => {},
+      () => height,
+    );
+    viewer.render(width);
+    viewer.handleInput!("\t");
+    assert.match(viewer.render(width).join("\n"), /› Description/);
+    viewer.handleInput!("\r");
+    assert.match(viewer.render(width).join("\n"), /Read-only detail/);
+  }
+});
