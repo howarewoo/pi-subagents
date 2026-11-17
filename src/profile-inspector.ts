@@ -135,14 +135,20 @@ export function createEditableProfileInspector(
   let child: (Component & Focusable) | undefined;
   let childHeight = 14;
   let textError = "";
-  let textEdit:
-    | {
-        input: Input | Editor;
-        profile: string;
-        field: "description" | "prompt" | "skills" | "leafTools";
-        original: string;
-      }
-    | undefined;
+  type TextField = "description" | "prompt" | "skills" | "leafTools";
+  type TextDraft = { input: Input | Editor; profile: string; field: TextField; original: string };
+  let textEdit: TextDraft | undefined;
+  // Unsubmitted native buffers, keyed by original owner (destination is fixed per Inspector).
+  // Memory-only UI state for this Inspector's lifetime; never an autosave intent.
+  const drafts = new Map<string, TextDraft>();
+  const draftKey = (profile: string, field: string) => JSON.stringify([profile, field]);
+  const textOf = (draft: TextDraft) =>
+    draft.input instanceof Input ? draft.input.getValue() : draft.input.getExpandedText();
+  const ownerOf = (draft: TextDraft) =>
+    `${destination === "global" ? "Global" : "Project"} ${draft.profile}.${draft.field}`;
+  // A pending destructive choice; the default always keeps text.
+  let decision: { action: string; affected: TextDraft[]; proceed: () => void } | undefined;
+  let failed = false;
   const positions = new Map<
     string,
     {
@@ -212,13 +218,32 @@ export function createEditableProfileInspector(
     follow = true;
     requestRender();
   };
+  /** Keep the active buffer (if changed) for an explicit later Resume; never submits. */
+  const suspend = () => {
+    if (textEdit && textOf(textEdit) !== textEdit.original)
+      drafts.set(draftKey(textEdit.profile, textEdit.field), textEdit);
+    leaveChild();
+  };
+  /** Destructive actions first identify affected drafts; the default choice keeps them. */
+  const guard = (action: string, affected: TextDraft[], proceed: () => void) => {
+    if (!affected.length) return proceed();
+    decision = { action, affected, proceed };
+    focus = "settings";
+    activeId = "keep-drafts";
+    offset = 0;
+    follow = true;
+  };
   const finishText = (submit: boolean, submitted?: string) => {
     const editing = textEdit;
     if (!editing) return true;
-    const value =
-      submitted ??
-      (editing.input instanceof Input ? editing.input.getValue() : editing.input.getExpandedText());
-    if (submit && value && (editing.field === "skills" || editing.field === "leafTools")) {
+    const value = submitted ?? textOf(editing);
+    if (!submit) {
+      // Explicit Escape cancels only this buffer.
+      drafts.delete(draftKey(editing.profile, editing.field));
+      leaveChild();
+      return true;
+    }
+    if (value && (editing.field === "skills" || editing.field === "leafTools")) {
       const current = catalog();
       const profile = selected();
       const values = (rawRole(current, destination, editing.profile)[editing.field] ??
@@ -236,21 +261,38 @@ export function createEditableProfileInspector(
       }
     }
     leaveChild(); // Clear before enqueue: Enter followed by blur cannot submit twice.
-    if (!submit || value === editing.original) return true;
-    if (editing.field === "skills" || editing.field === "leafTools") {
-      if (value)
-        send({
-          destination,
-          profile: editing.profile,
-          field: editing.field,
-          action: "include",
-          item: value,
-        });
-    } else
-      send({ destination, profile: editing.profile, field: editing.field, action: "set", value });
-    return true;
+    const { profile, field } = editing;
+    const list = field === "skills" || field === "leafTools";
+    if (value === editing.original || (list && !value)) return true;
+    try {
+      if (!mutable()) throw new Error("Not saved: editing is paused or read-only; text kept");
+      controller.enqueue(
+        list
+          ? { destination, profile, field, action: "include", item: value }
+          : { destination, profile, field, action: "set", value },
+      );
+      notice = "";
+      return true;
+    } catch (error) {
+      // A rejected commit never loses text: restore the same native buffer (Editor clears on submit).
+      if (editing.input instanceof Editor) editing.input.setText(value);
+      textEdit = editing;
+      child = editing.input;
+      child.focused = focused;
+      textError = String(error);
+      return false;
+    }
   };
-  const editText = (field: "description" | "prompt" | "skills" | "leafTools") => {
+  const editText = (field: TextField) => {
+    const existing = drafts.get(draftKey(name, field));
+    if (existing) {
+      // Resume the retained buffer and native cursor state, not the current preview.
+      drafts.delete(draftKey(name, field));
+      textEdit = existing;
+      existing.input.focused = focused;
+      child = existing.input;
+      return;
+    }
     const current = selected();
     const original =
       field === "skills" || field === "leafTools"
@@ -371,23 +413,91 @@ export function createEditableProfileInspector(
     child.focused = focused;
   };
   const navigate = (action?: "destination" | StructuralAction) => {
-    try {
-      controller.drain(() => done(action ? { profile: name, action } : undefined));
-    } catch (error) {
-      notice = String(error);
+    // Never ask to discard drafts for a navigation that recovery would refuse anyway.
+    if (controller.failure) {
+      notice = "Resolve recovery first";
+      return;
     }
+    guard(
+      action === "destination" ? "Change destination" : action ? "Structural transaction" : "Close",
+      [...drafts.values()],
+      () => {
+        try {
+          controller.drain(() => done(action ? { profile: name, action } : undefined));
+        } catch (error) {
+          notice = String(error);
+        }
+      },
+    );
+  };
+  const reload = () =>
+    guard("Reload", [...drafts.values()], () => {
+      notice = "";
+      void controller.reload();
+    });
+  const resume = (draft: TextDraft) => {
+    positions.set(name, { id: activeId, offset, panel, listField, targetPanel, panelReturn });
+    name = draft.profile;
+    panel = panelReturn = draft.field;
+    listField = draft.field === "skills" || draft.field === "leafTools" ? draft.field : undefined;
+    targetPanel = undefined;
+    activeId = listField ? "add-exact" : draft.field;
+    offset = 0;
+    focus = "settings";
+    editText(draft.field);
   };
   const unsubscribe = controller.subscribe(() => {
     // An exceptional failure freezes fields but never freezes read-only profile browsing.
-    if (controller.failure) {
-      child = undefined;
-      textEdit = undefined;
+    // Only the transition suspends input, so repeated notifications cannot drop/duplicate drafts.
+    if (controller.failure && !failed) {
+      if (textEdit) suspend();
+      else child = undefined;
+      decision = undefined;
+      focus = "settings";
       activeId = controller.failure.recovery === "reload" ? "reload" : "retry";
       follow = true;
     }
+    failed = Boolean(controller.failure);
     requestRender();
   });
+  const decisionRows = ({ action, affected, proceed }: NonNullable<typeof decision>): Row[] => [
+    {
+      id: "drafts-decision",
+      heading: true,
+      text: `${action} would discard ${affected.length} unsaved draft${affected.length === 1 ? "" : "s"}`,
+    },
+    ...affected.map((draft, index) => ({
+      id: `draft-owner:${index}`,
+      text: `${ownerOf(draft)}: ${truncateToWidth(textOf(draft).split("\n")[0] ?? "", 32)} (${textOf(draft).length} chars)`,
+    })),
+    ...(action === "Reload"
+      ? [
+          {
+            id: "draft-queued",
+            text: `Reload also abandons ${controller.pending.length} queued unsaved changes.`,
+          },
+        ]
+      : []),
+    {
+      id: "keep-drafts",
+      text: "Keep drafts and return (default)",
+      help: "Drafts stay in memory for this Inspector only; nothing is saved or submitted.",
+      run: () => {
+        decision = undefined;
+      },
+    },
+    {
+      id: "discard-drafts",
+      text: `Discard ${affected.length} draft${affected.length === 1 ? "" : "s"} and continue: ${action}`,
+      run: () => {
+        for (const draft of affected) drafts.delete(draftKey(draft.profile, draft.field));
+        decision = undefined;
+        proceed();
+      },
+    },
+  ];
   const buildRows = (): Row[] => {
+    if (decision) return decisionRows(decision);
     const current = catalog();
     const profile = selected();
     if (!profile)
@@ -460,20 +570,32 @@ export function createEditableProfileInspector(
             ? "Saving"
             : "Pending";
     };
+    const draftOf = (field: string) => drafts.get(draftKey(name, field));
+    // Resetting/replacing a drafted field first offers keep vs explicit discard of that draft only.
+    const replace = (field: string, label: string, run: () => void) => {
+      const draft = draftOf(field);
+      guard(label, draft ? [draft] : [], run);
+    };
     const field = (key: "description" | "prompt") => {
+      const draft = draftOf(key);
       action(
         key,
-        `${key === "prompt" ? "Instructions (prompt)" : "Description"}${fieldState(key) ? ` · ${fieldState(key)}` : ""} · ${Object.hasOwn(raw, key) ? "override" : "inherited"}`,
+        `${key === "prompt" ? "Instructions (prompt)" : "Description"}${draft ? " · Unsaved draft · Resume" : ""}${fieldState(key) ? ` · ${fieldState(key)}` : ""} · ${Object.hasOwn(raw, key) ? "override" : "inherited"}`,
         () => editText(key),
+        undefined,
+        Boolean(draft), // Retained text stays readable/editable while paused; commit rechecks.
       );
       info(String(raw[key] ?? profile[key]));
-      if (!own)
+      if (!own) {
+        const origin = identity();
         action(
           `reset:${key}`,
           `Reset ${key} to inherited`,
-          () => reset(key),
+          () =>
+            replace(key, `Reset ${key}`, () => send({ ...origin, field: key, action: "reset" })),
           Object.hasOwn(raw, key) ? undefined : "Already inherited",
         );
+      }
     };
     const failure = controller.failure;
     if (failure) {
@@ -490,14 +612,13 @@ export function createEditableProfileInspector(
         `${failure.error.stage}: ${failure.error.path} · replacement ${failure.error.replacement}`,
       );
       info(failure.error.message, "failure-message");
+      if (drafts.size)
+        info(`${drafts.size} unsaved drafts retained · Resume below; never auto-submitted.`);
       if (failure.recovery === "reload")
         action(
           "reload",
-          `Reload · abandon ${controller.pending.length} unsaved changes`,
-          () => {
-            notice = "";
-            void controller.reload();
-          },
+          `Reload · abandon ${controller.pending.length} unsaved changes${drafts.size ? ` + ${drafts.size} drafts` : ""}`,
+          reload,
           undefined,
           true,
         );
@@ -541,18 +662,20 @@ export function createEditableProfileInspector(
     if (controller.reloadError) {
       heading("Read-only · reopening failed; close is available", "reopen-error");
       info(String(controller.reloadError));
-      action(
-        "reload",
-        "Reload current allowed layers",
-        () => {
-          notice = "";
-          void controller.reload();
-        },
-        undefined,
-        true,
-      );
+      action("reload", "Reload current allowed layers", reload, undefined, true);
     }
     if (notice) info(notice, "notice");
+    if (drafts.size) {
+      heading("Unsaved drafts · memory only · never auto-saved", "drafts");
+      for (const draft of drafts.values())
+        action(
+          `resume:${draftKey(draft.profile, draft.field)}`,
+          `Resume ${ownerOf(draft)} draft`,
+          () => resume(draft),
+          undefined,
+          true,
+        );
+    }
     if (destination === "global" && current.provenance[name]?.source === "project")
       info(
         "Project-local definition: browse only here. Change destination explicitly to trusted Project; no Global shadow is created.",
@@ -634,20 +757,26 @@ export function createEditableProfileInspector(
               }),
           );
         }
-        if (listField === "skills" || listField === "leafTools")
+        if (listField === "skills" || listField === "leafTools") {
+          const draft = draftOf(listField);
           action(
             "add-exact",
-            `Add exact ${listField === "skills" ? "absolute skill path" : "reviewed leaf name"}`,
+            draft
+              ? `Resume unsaved exact entry draft: ${textOf(draft)}`
+              : `Add exact ${listField === "skills" ? "absolute skill path" : "reviewed leaf name"}`,
             () => editText(listField as "skills" | "leafTools"),
             destination === "project"
               ? "Project may only retain authorized grants; edit Global"
               : undefined,
+            Boolean(draft),
           );
+        }
       }
+      const listOrigin = { ...identity(), field: listField };
       action(
         "empty-list",
         `Explicit empty grant [] · ${listField}`,
-        () => send({ ...identity(), field: listField!, action: "clear" }),
+        () => replace(listField!, "Clear list", () => send({ ...listOrigin, action: "clear" })),
         listField === "models" &&
           (profile.models ?? []).some((target) => profileGrantRemovalReason(profile, target))
           ? "Current chain/default/prewalk still requires grants; adjust routing first"
@@ -659,7 +788,7 @@ export function createEditableProfileInspector(
         action(
           "reset-list",
           `Reset ${listField} to inherited`,
-          () => reset(listField!),
+          () => replace(listField!, "Reset list", () => send({ ...listOrigin, action: "reset" })),
           Object.hasOwn(raw, listField) ? undefined : "Already inherited",
         );
     } else if (!panel) {
@@ -972,15 +1101,29 @@ export function createEditableProfileInspector(
     dispose: unsubscribe,
     render(width) {
       width = Math.max(0, width);
+      const cancel = safe(keys.getKeys("tui.select.cancel").join("/") || "unbound");
+      const confirm = safe(keys.getKeys("tui.select.confirm").join("/") || "unbound");
+      const submit = safe(keys.getKeys("tui.input.submit").join("/") || "unbound");
       const height = Math.max(1, Math.floor(availableRows()));
       const paint = profileRowPaint(theme, width);
       compact = width < 32 || height < 16;
       if (compact) {
         visible.clear();
+        // Resize never commits or discards; the hint names Escape's actual local outcome.
         return [
           "Profiles · resize",
-          `${controller.status} · ${controller.pending.length} pending`,
-          "Esc: finish / close",
+          `${controller.status} · ${controller.pending.length} pending${drafts.size ? ` · ${drafts.size} drafts kept` : ""}`,
+          textEdit
+            ? `${cancel}: discard unfinished text`
+            : child
+              ? `${cancel}: back`
+              : decision
+                ? `${cancel}: keep drafts`
+                : panel || listField
+                  ? `${cancel}: back`
+                  : drafts.size
+                    ? "Enlarge to resume or discard drafts"
+                    : `${cancel}: finish / close`,
         ]
           .slice(0, height)
           .map(paint);
@@ -1075,7 +1218,7 @@ export function createEditableProfileInspector(
           ? profileSettingHelp[panel]
           : "Enter: open selected setting. Browsing never changes permissions.");
       const help = controller.failure
-        ? `${controller.failure.intent.profile}.${controller.failure.intent.field}: Not saved · ${controller.pending.length} unsaved · ${controller.failure.recovery === "reload" ? "Reload required" : "Retry / Revert available"}`
+        ? `${controller.failure.intent.profile}.${controller.failure.intent.field}: Not saved · ${controller.pending.length} unsaved · ${controller.failure.recovery === "reload" ? "Reload required" : "Retry / Revert available"}${drafts.size ? ` · ${drafts.size} drafts retained; Resume below` : ""}`
         : controller.reloadError
           ? "Read-only: reopening failed. Reload current allowed layers, or close."
           : selectedHelp;
@@ -1103,7 +1246,7 @@ export function createEditableProfileInspector(
               )
               .map(
                 (p) =>
-                  `${name === p.name && focus === "rail" ? "›" : " "} ${p.name}${controller.pending.some((i) => i.profile === p.name) ? " [pending]" : ""}`,
+                  `${name === p.name && focus === "rail" ? "›" : " "} ${p.name}${controller.pending.some((i) => i.profile === p.name) ? " [pending]" : ""}${[...drafts.values()].some((d) => d.profile === p.name) ? " [draft]" : ""}`,
               ),
             "",
             `Source: ${catalog().provenance[name]?.source ?? "resolved"}`,
@@ -1123,13 +1266,15 @@ export function createEditableProfileInspector(
           )
         : [...roster, ...Array.from({ length: viewport + helpHeight }, (_, i) => content[i] ?? "")];
       const row = (text: string) => paint(`│ ${cell(text, inner)} │`);
-      const label = textEdit
-        ? "Unfinished text · not committed"
-        : controller.status === "finishing"
-          ? "Finishing saves"
-          : controller.status === "saved"
-            ? "Saved · verified"
-            : controller.status;
+      const label = `${
+        textEdit
+          ? "Unfinished text · not committed"
+          : controller.status === "finishing"
+            ? "Finishing saves"
+            : controller.status === "saved"
+              ? "Saved · verified"
+              : controller.status
+      }${drafts.size ? ` · ${drafts.size} unsaved draft${drafts.size === 1 ? "" : "s"}` : ""}`;
       const mode = controller.status === "read-only" ? "Read-only" : "Editing";
       return [
         paint(`╭${cell(` Subagent Profiles / ${safe(name)} · ${label} `, width - 2)}╮`),
@@ -1141,9 +1286,11 @@ export function createEditableProfileInspector(
         row(
           child
             ? textEdit
-              ? `${textEdit.field === "prompt" ? "Native submit" : "Enter / blur"}: commit · Esc: unfinished only · Tab: profiles`
-              : "Catalog · Tab focus · Esc back · Ctrl+← profiles"
-            : "Tab rail/settings · ↑↓ · Enter open · 1–4 groups · Esc back/close",
+              ? `${!mutable() ? "Paused · Tab: keep draft" : textEdit.input instanceof Input ? `${submit} / Tab: commit` : `${submit}: commit · Tab: keep draft`} · ${cancel}: discard text`
+              : "Catalog · Tab focus · Esc back"
+            : decision
+              ? `↑↓ choose · ${confirm} select · ${cancel} keep drafts`
+              : "Tab rail/settings · ↑↓ · Enter open · 1–4 groups · Esc back/close",
         ),
         paint("╰" + "─".repeat(width - 2) + "╯"),
       ];
@@ -1154,8 +1301,9 @@ export function createEditableProfileInspector(
           // Resize never changes Escape into a close/commit of hidden unfinished input.
           if (textEdit) finishText(false);
           else if (child) child.handleInput?.(data);
+          else if (decision) decision = undefined;
           else if (panel || listField) back();
-          else navigate();
+          else if (!drafts.size) navigate(); // Its keep/discard choice needs a visible layout.
           requestRender();
         }
         return;
@@ -1164,23 +1312,37 @@ export function createEditableProfileInspector(
         if (keys.matches(data, "tui.select.cancel")) {
           if (textEdit) finishText(false);
           else child.handleInput?.(data);
-        } else if ((textEdit && matchesKey(data, "tab")) || matchesKey(data, "ctrl+left")) {
-          // Only single-line blur commits. Multiline commits exclusively on native submit.
-          if (textEdit?.input instanceof Input) {
+        } else if (textEdit && matchesKey(data, "tab")) {
+          // Only an editable single-line blur commits; multiline (or paused) text is kept as a draft.
+          if (textEdit.input instanceof Input && mutable()) {
             if (!finishText(true)) return;
-          } else if (textEdit) finishText(false);
-          else leaveChild();
+          } else suspend();
           focus = "rail";
-        } else child.handleInput?.(data);
+        } else if (
+          textEdit &&
+          !mutable() &&
+          (keys.matches(data, "tui.input.submit") ||
+            (textEdit.input instanceof Input && data === "\n"))
+        ) {
+          // In particular don't let Editor clear/trim a paused draft on native submit.
+          textError = "Not saved: editing is paused or read-only; text kept";
+        } else child.handleInput?.(data); // Native text keys, including Ctrl+Left word movement.
         requestRender();
         return;
       }
       if (keys.matches(data, "tui.select.cancel")) {
-        if (listField || panel) back();
+        if (decision) decision = undefined;
+        else if (listField || panel) back();
         else navigate();
         requestRender();
         return;
       }
+      // A pending discard decision is modal: no rail/group jumps can retarget it.
+      if (
+        decision &&
+        (matchesKey(data, "tab") || matchesKey(data, "shift+tab") || /^[1-4]$/.test(data))
+      )
+        return;
       if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
         focus = focus === "rail" ? "settings" : "rail";
         follow = true;

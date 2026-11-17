@@ -1,3 +1,15 @@
+# TUI draft-preservation verification
+
+This record covers the draft-preservation change only; the historical records below remain unchanged.
+
+- Focused profile editor/autosave/config/viewer/catalog suites: **123 passed**. Real controller and filesystem fixtures cover interrupted text, original ownership, once-only submission, Retry/Revert/Reload, explicit discard, trust changes and failed reopening.
+- Coordinator `npm run check`: lint, format, typecheck, **477 tests passed**, no failures/skips/cancellations, and the controlled SDK exercise passed. After a wording-only footer repair, the affected editor suite passed **39/39**, with scoped lint/format/typecheck also passing; unaffected aggregate evidence is reused.
+- An isolated offline actual Pi 1.5.2 CLI, loading the changed extension and the existing controlled provider, exercised native Ctrl+Left, multiline Tab suspension, browsing another profile, and Resume of the original buffer and caret. No model request was initiated in this draft exercise. Disk remained unchanged until an explicit action.
+- Measured 80×24 PTY / production 72×21 overlay exposed usable owner-qualified keep/discard controls. At 60×16, hidden Enter did not submit; restoring 80×24 preserved text. A 100×30 PTY exercised the wide decision layout. The host exited **0** via normal Ctrl+D. Orca can resize its backing terminal, so captures establish their measured PTY geometry, not an exhaustive display certification.
+- Terminal observation caught a clipped default Escape hint; the owner shortened it and the component regression now uses both default `escape/ctrl+c` bindings and checks the complete untruncated action. Final native confirmation of that wording, light-theme comparison and combined profile-usability flows remain pending integration acceptance.
+
+These are controlled offline, component and terminal-text observations, not paid-provider reasoning, screenshots, screen-reader certification or human contrast acceptance. Draft publication does not establish the remaining combined-flow acceptance.
+
 # Concurrent shared-writer verification
 
 Current local implementation: `feat/concurrent-writers`, based on
