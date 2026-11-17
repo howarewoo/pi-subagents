@@ -1,3 +1,20 @@
+# Combined acceptance follow-up
+
+The verification-only local A/B/C reconciliation passed `npm run check`: lint, format,
+strict types, **503/503 tests**, no failures/skips/cancellations, and SDK exercise PASS.
+C's Hub/widget production source is unchanged from its independently verified branch.
+Native combined profile checks subsequently confirmed baseline draft/footer/caret,
+Space and exact-grant effects, safe resize, and real external-conflict Keep/Discard /
+Reload behavior. Native light selection was independently confirmed in settings; no
+pixel-contrast, screenshot, screen-reader or paid-provider certification is claimed.
+C and combined CLI hosts exited normally with runtime exit 0 and owned-tab cleanup,
+without PTY kill. The prior pending-combined checkpoint below is superseded, not rewritten.
+
+All three PRs remain independent against `main`; prefer A then B for shared profile
+source. Resolve overlapping docs by retaining each new entry and historical bytes.
+No production code changed after the successful aggregate checks. CI/review monitoring,
+merge and readiness changes remain outside this delivery.
+
 # Hub and widget usability verification
 
 Independent `fix/tui-supervision`, based on `main` at
