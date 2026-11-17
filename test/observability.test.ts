@@ -109,6 +109,15 @@ const palette = {
   colors: { customMessageBg: oklchColor(0.3, 0.1, 330) },
 };
 
+// Compare semantic footer text independently of wrapping at the physical row boundary.
+function footerText(frame: string) {
+  const lines = frame.split("\n");
+  return lines
+    .slice(lines.findIndex((line) => line.startsWith("├")) + 1, -1)
+    .map((line) => line.slice(1, -1).trim())
+    .join(" ");
+}
+
 // Capture the same real public parent dispatcher that direct fixture admission already uses.
 async function captureAdmission(
   t: import("node:test").TestContext,
@@ -189,14 +198,25 @@ test(
       assert.equal(f.coordinator.snapshot(first)!.writerLease, false);
       assert.equal(f.coordinator.snapshot(second)!.status, "queued");
       assert.match(render(), /draining/);
-      assert.doesNotMatch(render(), /Stopped and drained/);
+      assert.ok(
+        footerText(render()).includes(
+          `Stop ${first.id} #${first.generation} · writer · implementation: stopping and draining…`,
+        ),
+        "pending stop feedback identifies the original target while capacity remains occupied",
+      );
+      assert.doesNotMatch(render(), /stopped and drained/i);
       release();
       const final = await f.coordinator.wait(first);
       await f.coordinator.wait(second);
       assert.equal(final.status, "cancelled");
       assert.equal(final.writerLease, false);
       assert.ok(final.endedAt! >= final.createdAt);
-      assert.match(render(), /Stopped and drained/);
+      assert.ok(
+        footerText(render()).includes(
+          `Stop ${first.id} #${first.generation} · writer · implementation: stopped and drained`,
+        ),
+        "success identifies the same target only after its real SDK drain completes",
+      );
       assert.match(transcriptLines(f.coordinator.messages(first), true).join("\n"), /Tool write/);
     } finally {
       release();
@@ -263,7 +283,7 @@ test("real SDK selected generation retains full outcomes/transcript/artifacts ac
     Reflect.set(sessions[0], "assignment", "mutated observer snapshot");
     assert.notEqual(f.coordinator.sessions()[0].assignment, sessions[0].assignment);
     const widget = createChildWidget(() => f.coordinator.sessions(), palette);
-    assert.deepEqual(widget.render(180), ["● Subagents 3 · 3 settled"]);
+    assert.deepEqual(widget.render(180), ["● Subagents 3 · 3 settled · /subagent-hub"]);
     assert.match(render(), /SUBAGENTS · 3 generations/);
     assert.match(render(), /> [├└] ● original/);
     assert.doesNotMatch(render(), /#1/, "generation badge is not shown in the roster");
@@ -358,7 +378,17 @@ test(
       assert.match(render(), new RegExp(`Target: ${first.id} #1`));
       const calls = f.model.state.callCount;
       hub.handleInput!("\r");
-      assert.match(render(), /no longer running; no action sent/);
+      const refusal = footerText(render());
+      assert.ok(
+        refusal.includes(
+          `Inbox ${first.id} #${first.generation} · first · scout failed: Error: Target ${first.id} #${first.generation} is no longer running; no action sent`,
+        ),
+        "wrapped refusal retains both the original target and the no-action outcome",
+      );
+      assert.ok(
+        !refusal.includes(`Inbox ${second.id} #${second.generation}`),
+        "feedback must not describe the newly selected running task as its target",
+      );
       assert.equal(f.model.state.callCount, calls);
       assert.equal(f.coordinator.snapshot(second)!.status, "running");
       await assert.rejects(

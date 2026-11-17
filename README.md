@@ -167,7 +167,7 @@ _Synthetic native-component output; not a terminal screenshot or live-provider v
 
 Subagent Hub shows the task list beside the selected conversation using Pi's native renderers. On narrow terminals, the conversation takes the full width. Details shows results, artifacts, grants and usage; Tools shows full sanitized arguments and result text.
 
-The thread follows new output until you scroll up. Press End to follow again. The pinned Subagents widget appears after the first task starts. Closing Subagent Hub does not stop the work.
+The thread follows new output until you scroll up. Press End to follow again. The pinned Subagents widget appears after the first task starts. Compact summaries retain explicit failed counts, distinct from settled or cancelled tasks without relying on color. Summary-only fleets include a `/subagent-hub` hint within the widget's existing row budget at practical widths (for example, 55 columns). Closing Subagent Hub does not stop the work.
 
 The Hub and widget illustrations use native renderer output with a synthetic fleet filling the default 16 concurrent slots and 32-item queue. Four read-only audit leads each have three foreground descendants, reaching the default nesting depth of two. The queue represents two further 16-task root batches, not one oversized batch. These are illustrations, not terminal screenshots or live-provider stress-test evidence. Regenerate them with `node scripts/render-hub-hero.ts` and `node scripts/render-hub-hero.ts --widget`.
 
@@ -175,20 +175,24 @@ The Hub and widget illustrations use native renderer output with a synthetic fle
 
 _Subagent Hub at default capacity: tasks and conversations side by side, with nested scouts/reviewers at depth two. The roster scrolls through all 48 tasks._
 
-| Key                   | Action                                            |
-| --------------------- | ------------------------------------------------- |
-| ↑ / ↓                 | Select a subagent or historical generation        |
-| j / k                 | Scroll down / up one line                         |
-| Ctrl+u/d or PgUp/PgDn | Scroll a page                                     |
-| Home / End            | Top / latest output                               |
-| Tab                   | Switch between thread, details and tools          |
-| /                     | Filter the subagent list                          |
-| s / m                 | Steer / send an inbox message                     |
-| x, then y             | Stop the selected subtree; Enter does not confirm |
-| w / p                 | Wait briefly for an outcome / park an idle task   |
-| Esc                   | Cancel input or close the Hub                     |
+| Key                   | Action                                                                      |
+| --------------------- | --------------------------------------------------------------------------- |
+| ↑ / ↓                 | Select a subagent or historical generation                                  |
+| j / k                 | Scroll down / up one line                                                   |
+| Ctrl+u/d or PgUp/PgDn | Scroll a page                                                               |
+| Home / End            | Top / latest output                                                         |
+| Tab                   | Switch between thread, details and tools                                    |
+| /                     | Filter the subagent list                                                    |
+| s / m                 | Steer / send an inbox message                                               |
+| x, then y             | Stop the selected subtree; Enter does not confirm                           |
+| w / p                 | Wait briefly for an outcome / park an idle task                             |
+| ?                     | Open browse help; ? or cancel returns to the same view and reading position |
+| Enter                 | Close the Hub in browse mode; send/apply in input                           |
+| Esc / Ctrl+C          | Cancel input, return from help, or close the Hub                            |
 
-Mouse-wheel scrolling works in fullscreen mode. In regular mode, use the keyboard controls because the terminal owns mouse scrollback. Actions stay pinned to the original task and generation; controls refuse to submit if the window cannot show the full target.
+These are the default keys. The footer names the next Tab view and all configured confirm/cancel browse-close bindings. Tool expansion uses the configured `app.tools.expand` keys (default Ctrl+O), with its current expanded/collapsed state shown in the thread footer; unbound actions have no fallback key. Browse `?` opens observation-only, scrollable help that blocks underlying controls. In filter/steer/inbox inputs, printable `?`, j/k and Space remain text. Stop still requires **y**, never Enter.
+
+Mouse-wheel scrolling works in fullscreen mode. In regular mode, use the keyboard controls because the terminal owns mouse scrollback. Actions and pending/success/error notices identify the original task UUID, generation and task label even after selecting another task or filtering it out. Controls refuse to submit if the window cannot show the full target. A stopped-and-drained notice appears only after drain completes; inbox receipt state and queued/handled steering are not model acknowledgment. Navigation, help, resize and closing do not dispatch task controls.
 
 ## Messages and follow-up work
 
