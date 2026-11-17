@@ -1297,11 +1297,6 @@ test("physical 80×28 Global Add uses the production 90% overlay and accepts eve
 });
 
 const ctrlLeft = "\x1b[1;5D";
-const waitFor = async (ready: () => boolean) => {
-  for (let i = 0; i < 200 && !ready(); i++)
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.ok(ready());
-};
 
 test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across profile browsing; Resume submits once; Escape cancels only the active buffer", async (t) => {
   const f = await inspector(t);
@@ -1364,6 +1359,7 @@ test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across pro
 
 test("an earlier save failure retains another draft; repeated failures, Retry and Revert never submit it; Reload asks with draft and queued counts", async (t) => {
   const f = await inspector(t);
+  const reload = t.mock.method(f.controller, "reload");
   const open = fs.open;
   let fail = true;
   const gate = deferred();
@@ -1432,7 +1428,9 @@ test("an earlier save failure retains another draft; repeated failures, Retry an
   assert.equal(f.controller.status, "reload-required");
   f.activate("Reload · abandon");
   f.activate("Discard 1 draft and continue: Reload");
-  await waitFor(() => f.controller.status === "saved");
+  assert.equal(reload.mock.callCount(), 1);
+  await reload.mock.calls[0]!.result; // Await the UI-triggered reopen, not event-loop turns.
+  assert.equal(f.controller.status, "saved");
   assert.equal(f.controller.pending.length, 0);
   assert.doesNotMatch(f.render(), /Resume Global|unsaved draft/);
   assert.equal((await f.disk()).general.description, "Global description");
@@ -1579,6 +1577,7 @@ test("successful Retry keeps an interrupted invalid exact entry and never enqueu
 
 test("frozen multiline native submit preserves exact whitespace; confirmed draft discard remains discarded when Reload fails", async (t) => {
   const f = await inspector(t);
+  const reload = t.mock.method(f.controller, "reload");
   f.open("Instructions");
   f.activate("Instructions (prompt)");
   f.input("\x01", "\x0b", "  exact buffer  ", "\t", "\t");
@@ -1599,7 +1598,9 @@ test("frozen multiline native submit preserves exact whitespace; confirmed draft
   assert.match(f.render(), /exact buffer   \(16 chars\)/);
   await fs.writeFile(f.projectPath, "{ malformed");
   f.activate("Discard 1 draft and continue: Reload");
-  await waitFor(() => Boolean(f.controller.reloadError));
+  assert.equal(reload.mock.callCount(), 1);
+  await reload.mock.calls[0]!.result;
+  assert.ok(f.controller.reloadError);
   assert.equal(f.controller.status, "read-only");
   assert.equal(f.controller.pending.length, 0);
   assert.doesNotMatch(f.render(), /Resume Global|unsaved draft/);
