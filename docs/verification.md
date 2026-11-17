@@ -1,3 +1,43 @@
+# Combined TUI acceptance follow-up
+
+This follow-up supersedes the pending combined-acceptance checkpoint below; it does
+not rewrite historical evidence. The three PRs remain independent against `main`.
+
+- A verification-only local checkout reconciled A `7816fd2`, B `f421452` and C `ef029cd`.
+  `npm run check` passed lint, formatting, strict types, **503/503 tests** with no
+  failures/skips/cancellations, and the controlled SDK exercise. No production source
+  changed after that check; subsequent branch updates add evidence only.
+- Actual isolated offline Pi 1.5.2 at measured **80×24 → 72×21**, with the existing
+  controlled provider and synthetic configuration: full untruncated native draft footer,
+  Ctrl+Left word movement, original-General Resume from Scout and preserved native caret;
+  Space membership save without submitting the prompt; long ASCII/CJK exact-grant
+  inspection and precise revocation while retaining unrelated grants.
+- Enter on a scrolled-away grant label did not save. The **68×14** nested picker retained
+  scope/grant/atomic-save disclosures, literal `j k?` search, F1 exact details and explicit
+  effort confirmation. Hidden Enter at **60×16 → 54×14** did not save; confirmation
+  survived **100×30 → 90×27** and baseline restoration before explicit submission.
+- A real synthetic external-file conflict retained one accepted queued change and the
+  original prompt draft. Default Keep retained both; paused native Enter kept exact text
+  without enqueueing. Explicit Discard-and-Reload retained verified tool/model changes
+  and the external edit without writing the rejected description or abandoned prompt.
+- Native settings independently confirmed light selection; the baseline light editor
+  retained the full footer and unchanged saved text. Normal Ctrl+D exit **0**, absence
+  of an owned live CLI and owned-tab closure without PTY kill were independently checked.
+
+Integration preserves A's native buffers, modal/default-keep and paused input handling;
+B's label footprints, latest-geometry guards, contextual hints and membership flags;
+and both independent test additions. Use A's native text/decision footer, configured
+catalog cancel (not a Ctrl+Left-to-profiles claim), and B's normal browse hints when
+resolving overlap. Keep A's README draft instructions, B's membership instructions and
+all new evidence entries. Prefer A then B; C's production source is independent. The
+local integration branch is retained for reference, not published as a fourth PR.
+
+Limits: native catalog used one controlled physical model. Three mixed hidden-reason
+categories, all effort variants, Retry/Revert/prewrite faults and delayed active Stop /
+original-generation / capacity/drain cases use component, filesystem and real-SDK tests.
+Text/geometry and real dark/light/tinted-theme tests are not pixel-contrast, screenshot,
+screen-reader or paid-provider certification. No CI/review/merge readiness is claimed.
+
 # TUI draft-preservation verification
 
 This record covers the draft-preservation change only; the historical records below remain unchanged.
