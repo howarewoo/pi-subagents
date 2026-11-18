@@ -9,9 +9,9 @@ Use this extension to supervise delegated work inside a running Pi session. Keep
 
 [Install](#installation) · [Quick start](#quick-start) · [Subagent Hub](#subagent-hub) · [Compare extensions](#feature-comparison) · [Documentation](#documentation)
 
-![Terminal illustration of the pinned Subagents widget showing 48 tasks: 16 running and 32 queued, with a hidden nested-agent summary and an overflow link to Subagent Hub.](docs/images/subagent-widget.svg)
+![Illustration of the pinned Subagents widget with 16 running and 32 queued tasks, plus a separate compact example with three settled tasks, one failure, and the Subagent Hub command.](docs/images/subagent-widget.svg)
 
-_Pinned Subagents widget at default capacity: 16 running tasks and 32 queued. Counts and nested-agent progress stay visible above the editor. Synthetic demo data, not a live load test._
+_Pinned Subagents widget at default capacity: 16 running tasks and 32 queued. Below it, a separate 55-column example shows the failure count and `/subagent-hub` even when no tasks are running. Synthetic demo data, not a live load test._
 
 ## Installation
 
