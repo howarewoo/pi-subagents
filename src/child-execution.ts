@@ -53,6 +53,8 @@ export type ExecutionRecord = {
   cancelled: boolean;
   recoveryAbort?: AbortController;
   prepareModel?: (selected: ModelSelection) => void;
+  budgetNoticeSent?: boolean;
+  wrapUp?: { reason: "requests" | "tools"; requestCeiling: number };
 };
 
 /** Operations bound to the exact admitted entry, never a later generation with its ID. */
@@ -64,7 +66,8 @@ export interface ExecutionOwner {
   authorizeTool(name: string, builtin: boolean): Promise<void>;
   assertTool(name: string, builtin: boolean, signal?: AbortSignal): void;
   chargeRequest(): void;
-  chargeToolCall(): void;
+  chargeToolCall(name: string): void;
+  budgetGuidance(): string | undefined;
   observeUserMessage(text: string): void;
   drainDescendants(): Promise<void>;
   dispose(): void;
@@ -230,12 +233,38 @@ export async function createChildExecution(
       extensionFactories: [
         ...(inheritCodemode ? [createCodemodeExtension({ models: false })] : []),
         (pi) => {
+          pi.on("context_with_system", ({ messages }) => {
+            if (stopped() || policyError) return;
+            const guidance = owner.budgetGuidance();
+            // Project into an already-selected request instead of steering, which can
+            // otherwise start another turn after a child has finished its work.
+            if (guidance)
+              return {
+                messages: [
+                  ...messages,
+                  { role: "system", content: guidance, timestamp: Date.now() },
+                ],
+              };
+          });
           pi.on("tool_call", (event, ctx) => {
+            if (entry.wrapUp && entry.validator && event.toolName !== "submit_result") {
+              const response = entry.session?.messages.findLast(
+                (message) => message.role === "assistant",
+              );
+              // A final submission can end a mixed batch; a batch with only blocked calls
+              // should still give the child a chance to report within its remaining reserve.
+              return {
+                block: true,
+                terminate: response?.content.some(
+                  (block) => block.type === "toolCall" && block.name === "submit_result",
+                ),
+                reason: "Delegation wrap-up: only submit_result is available",
+              };
+            }
             if (event.toolName !== "codemode") return;
-            if (entry.cancelled || entry.paused || owner.closing)
-              throw new Error("Delegation cancelled");
+            if (stopped()) throw new Error("Delegation cancelled");
             ctx.signal?.throwIfAborted();
-            owner.chargeToolCall();
+            owner.chargeToolCall(event.toolName);
             if (!input.codemodeEnabled?.())
               return { block: true, reason: "Parent codemode is no longer enabled" };
           });
@@ -527,6 +556,7 @@ export async function createChildExecution(
               },
             ],
             details: {},
+            ...(entry.wrapUp ? { terminate: true } : {}),
           };
         },
       };
@@ -542,7 +572,7 @@ export async function createChildExecution(
       tool.execute = async (...args) => {
         if (entry.cancelled || entry.paused || owner.closing)
           throw new Error("Delegation cancelled");
-        owner.chargeToolCall();
+        owner.chargeToolCall(tool.name);
         return execute(...args);
       };
     }
