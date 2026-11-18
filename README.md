@@ -267,7 +267,7 @@ See [configuration, safety and diagnostics](docs/advanced-policies.md#profile-ow
 
 Default task limits are **30 minutes**, **200 direct model requests** and **500 tool calls**:
 
-- Higher budgets permit more work and potentially higher cost before cancellation. Explicit operator budgets still apply; trusted project and per-task limits can only narrow their applicable budgets.
+- These are hard caps. Before reaching them, a subagent can use reserved capacity to report partial findings or submit a structured result instead of starting new work. Wrap-up does not add capacity or guarantee a result. Trusted project and per-task limits can still only narrow the applicable budgets.
 - A deadline pauses the active subtree after tool/provider drain, releasing capacity but retaining sessions and conversations.
 - Use `subagent` resume or root-only `delegate_coordinate` `{action:"resume",target:{id,generation},assignment:"Continue…"}` to continue the same identity and conversation. Only the deadline resets; request/tool/spawn counters remain cumulative (at most 64 windows per generation). Completed windows retain earlier result/artifact evidence in `completedWindows`; a resumed completed structured assignment requires a new `submit_result`.
 - Resume the parent first, then explicitly selected children. Descendants never resume automatically.

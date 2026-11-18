@@ -56,6 +56,47 @@ async function launch(
   return result.details as ChildSnapshot;
 }
 
+test("tool wrap-up protects a structured submission from a batch of non-report tools", async (t) => {
+  let reads = 0;
+  let reportRequests = 0;
+  const f = await fixture(t, {
+    speed: 0,
+    extra: (pi) => {
+      pi.on("tool_call", ({ toolName }) => {
+        if (toolName === "read") reads++;
+      });
+    },
+    response: response((context) => {
+      const guidance = context.messages
+        .filter((message) => message.role === "system")
+        .map((message) => message.content)
+        .join("\n");
+      const read = () => fauxToolCall("read", { path: "missing.txt" });
+      if (!context.messages.some((message) => message.role === "toolResult"))
+        return fauxAssistantMessage([read(), read(), read()], { stopReason: "toolUse" });
+      assert.match(guidance, /Delegation wrap-up.*submit_result/s);
+      if (++reportRequests === 1) return fauxAssistantMessage(read(), { stopReason: "toolUse" });
+      return fauxAssistantMessage(
+        [read(), fauxToolCall("submit_result", { value: { answer: 42 } })],
+        { stopReason: "toolUse" },
+      );
+    }),
+  });
+  const result = await launch(
+    f,
+    task("report from evidence", { limits: { requests: 4, tools: 3 } }),
+  );
+  assert.equal(result.status, "settled", result.error ?? result.result);
+  assert.equal(result.toolCalls, 3);
+  assert.equal(result.telemetry.requests, 3);
+  assert.equal(reportRequests, 2);
+  assert.equal(reads, 2);
+  assert.equal(result.outcome?.finalized, true);
+  assert.deepEqual(JSON.parse(await readFile(result.artifacts!.structured!, "utf8")), {
+    answer: 42,
+  });
+});
+
 test("real SDK submit_result strictly rejects invalid value, accepts correction once and persists exact structured/plain artifacts", async (t) => {
   const fullText = "large final 🦉\n".repeat(3500);
   const f = await fixture(t, {
@@ -125,15 +166,17 @@ test("missing/invalid submission fails; accepted submission cannot override prov
                   stopReason: "error",
                   errorMessage: "provider failed after submission",
                 })
-              : mode === "tools"
-                ? fauxAssistantMessage(fauxToolCall("submit_result", { value: { answer: 99 } }), {
-                    stopReason: "toolUse",
-                  })
-                : fauxAssistantMessage("final");
-          return fauxAssistantMessage(
-            fauxToolCall("submit_result", { value: { answer: mode === "invalid" ? "wrong" : 42 } }),
-            { stopReason: "toolUse" },
-          );
+              : fauxAssistantMessage("final");
+          const submission = fauxToolCall("submit_result", {
+            value: { answer: mode === "invalid" ? "wrong" : 42 },
+          });
+          // A lone valid report now ends wrap-up without further model work. Add a
+          // sibling to exercise an actual attempted overrun after acceptance.
+          const calls = [submission];
+          if (mode === "requests") calls.push(fauxToolCall("submit_result", {}));
+          if (mode === "tools")
+            calls.push(fauxToolCall("submit_result", { value: { answer: 99 } }));
+          return fauxAssistantMessage(calls, { stopReason: "toolUse" });
         }),
       });
       const state = await launch(
@@ -144,6 +187,10 @@ test("missing/invalid submission fails; accepted submission cannot override prov
       assert.equal(state.disposed, true);
       if (mode === "missing" || mode === "invalid") assert.match(state.error!, /not submitted/);
       if (mode === "provider") assert.match(state.error!, /provider failed after submission/);
+      if (mode === "requests" || mode === "tools") {
+        assert.equal(state.limitReason, mode);
+        assert.equal(state.outcome?.validation, "submitted");
+      }
       assert.equal(state.outcome?.finalized, true);
     });
 });

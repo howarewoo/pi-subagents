@@ -1002,7 +1002,8 @@ export class DelegationCoordinator {
         }
       }
       if (
-        (entry.state.telemetry.requests ?? 0) >= limits.requests ||
+        (entry.state.telemetry.requests ?? 0) >=
+          Math.min(limits.requests, entry.wrapUp?.requestCeiling ?? limits.requests) ||
         entry.state.toolCalls >= limits.tools ||
         entry.spawned > limits.spawns
       )
@@ -1087,7 +1088,7 @@ export class DelegationCoordinator {
       entry.resuming = false;
     }
   }
-  private limit(entry: Entry, reason: string): void {
+  private limit(entry: Entry, reason: string, detail?: string): void {
     if (
       entry.cancelled ||
       entry.state.disposed ||
@@ -1099,14 +1100,64 @@ export class DelegationCoordinator {
       void this.pause(entry.state);
       return;
     }
-    this.update(entry, { limitReason: reason, error: `Execution limit: ${reason}` });
+    this.update(entry, {
+      limitReason: reason,
+      error: `Execution limit: ${reason}${detail ? ` (${detail})` : ""}`,
+    });
     void this.stop(entry.state);
   }
-  private chargeToolCall(entry: Entry): void {
+  private atToolReserve(entry: Entry): boolean {
+    const { limits, toolCalls } = entry.state;
+    // A one-call prose task can still run its only tool. Structured tasks need
+    // that slot for submission, even if the caller grants only one tool call.
+    const reserved = limits.tools > 1 || !!entry.validator ? 1 : 0;
+    return toolCalls >= limits.tools - reserved;
+  }
+  private budgetGuidance(entry: Entry): string | undefined {
+    const { limits, telemetry, toolCalls, outcome } = entry.state;
+    const requests = telemetry.requests ?? 0;
+    const requestsLeft = limits.requests - requests;
+    if (requestsLeft <= 0) return;
+    const toolsLeft = limits.tools - toolCalls;
+    const needsSubmission = outcome && outcome.validation !== "submitted";
+    const reportRequests = needsSubmission ? 2 : 1;
+    const requestReserve = Math.min(reportRequests, Math.max(1, limits.requests - 1));
+    const forTools = this.atToolReserve(entry);
+    const forRequests = (limits.requests > 1 || !!outcome) && requestsLeft <= requestReserve;
+    if (!entry.wrapUp && (forTools || forRequests))
+      entry.wrapUp = {
+        reason: forTools ? "tools" : "requests",
+        requestCeiling: Math.min(limits.requests, requests + reportRequests),
+      };
+    if (entry.wrapUp) {
+      const available = Math.min(limits.requests, entry.wrapUp.requestCeiling) - requests;
+      if (available <= 0) return;
+      const report = needsSubmission
+        ? "Use submit_result if your findings satisfy the required schema. Do not invent missing values; prose is not a structured submission."
+        : "Return a final report based on work already done, including what is still incomplete.";
+      return `Delegation wrap-up: ${available} model request(s) available including this one, ${toolsLeft} tool calls left under the hard cap. No new work or tools other than a pending submit_result. ${report}`;
+    }
+    const warningFraction = 0.8;
+    if (
+      !entry.budgetNoticeSent &&
+      (requests >= Math.ceil(limits.requests * warningFraction) ||
+        toolCalls >= Math.ceil(limits.tools * warningFraction))
+    ) {
+      entry.budgetNoticeSent = true;
+      return `Approaching a delegation budget: ${requestsLeft} model requests left including this one, ${toolsLeft} tool calls left under the hard caps. Wrap up soon and report what is incomplete.${needsSubmission ? " Remember to submit_result." : ""}`;
+    }
+  }
+  private chargeToolCall(entry: Entry, name: string): void {
+    if (name !== "submit_result" && entry.wrapUp)
+      throw new Error("Delegation wrap-up: tool calls are reserved for reporting");
     if (entry.state.toolCalls >= entry.state.limits.tools) {
       this.limit(entry, "tools");
       throw new Error("Tool call limit");
     }
+    // Check on every charge so siblings in a parallel batch (and nested calls
+    // inside a tool) cannot spend a pending report's last tool slot.
+    if (name !== "submit_result" && this.atToolReserve(entry))
+      throw new Error("Delegation wrap-up: tool calls are reserved for reporting");
     this.update(entry, { toolCalls: entry.state.toolCalls + 1 });
   }
   private async revalidateExecutionFallback(entry: Entry): Promise<void> {
@@ -1206,16 +1257,16 @@ export class DelegationCoordinator {
       effort: entry.state.effort as ModelSelection["effort"],
     });
     if (entry.cancelled || entry.paused || this.closing) throw new Error("Delegation cancelled");
-    if ((entry.state.telemetry.requests ?? 0) >= entry.state.limits.requests) {
+    const requests = entry.state.telemetry.requests ?? 0;
+    if (requests >= entry.state.limits.requests) {
       this.limit(entry, "requests");
       throw new Error("Direct request limit");
     }
-    this.update(entry, {
-      telemetry: {
-        ...entry.state.telemetry,
-        requests: (entry.state.telemetry.requests ?? 0) + 1,
-      },
-    });
+    if (entry.wrapUp && requests >= entry.wrapUp.requestCeiling) {
+      this.limit(entry, entry.wrapUp.reason, "reserved reporting requests exhausted");
+      throw new Error("Delegation wrap-up request limit");
+    }
+    this.update(entry, { telemetry: { ...entry.state.telemetry, requests: requests + 1 } });
   }
   private observeExecutionMessage(entry: Entry, text: string): void {
     for (const message of this.coordinationMessages)
@@ -1249,7 +1300,8 @@ export class DelegationCoordinator {
         ),
       assertTool: (name, builtin, signal) => this.assertExecutionTool(entry, name, builtin, signal),
       chargeRequest: () => this.chargeExecutionRequest(entry),
-      chargeToolCall: () => this.chargeToolCall(entry),
+      chargeToolCall: (name) => this.chargeToolCall(entry, name),
+      budgetGuidance: () => this.budgetGuidance(entry),
       observeUserMessage: (text) => this.observeExecutionMessage(entry, text),
       drainDescendants: () => this.stopMany(this.children(entry).map((child) => child.state)),
       dispose: () => this.dispose(entry),
@@ -1578,7 +1630,7 @@ export class DelegationCoordinator {
     const entry = this.entry(ref);
     this.assertActive(entry);
     signal?.throwIfAborted();
-    this.chargeToolCall(entry);
+    this.chargeToolCall(entry, "read");
   }
   async steer(ref: ChildRef, text: string): Promise<"queued" | "handled"> {
     requireSupportedHost();

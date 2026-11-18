@@ -86,6 +86,63 @@ test("explicit operator budgets override defaults within unchanged ceilings; tru
   }
 });
 
+test("request wrap-up reports through the last allowed request without starting an extra turn", async (t) => {
+  let calls = 0;
+  let notices = 0;
+  const f = await fixture(t, {
+    speed: 0,
+    response: (context) => {
+      if (userText(context) !== "long assignment") return fauxAssistantMessage("quick report");
+      calls++;
+      const guidance = context.messages
+        .filter((message) => message.role === "system")
+        .map((message) => message.content)
+        .join("\n");
+      if (guidance.includes("Approaching a delegation budget")) {
+        notices++;
+        assert.match(guidance, /2 model requests.*22 tool calls/);
+      }
+      if (guidance.includes("Delegation wrap-up")) {
+        assert.equal(calls, 10);
+        return fauxAssistantMessage("Partial report from the tools already run");
+      }
+      return fauxAssistantMessage(fauxToolCall("read", { path: "missing.txt" }), {
+        stopReason: "toolUse",
+      });
+    },
+  });
+  const ref = await f.direct("long assignment", "scout", { limits: { requests: 10, tools: 30 } });
+  const result = await f.coordinator.wait(ref);
+  assert.equal(result.status, "settled");
+  assert.equal(result.result, "Partial report from the tools already run");
+  assert.equal(result.telemetry.requests, 10);
+  assert.equal(result.toolCalls, 9);
+  assert.equal(calls, 10);
+  assert.equal(notices, 1);
+
+  const quick = await f.direct("quick assignment", "scout", { limits: { requests: 10 } });
+  const quickResult = await f.coordinator.wait(quick);
+  assert.equal(quickResult.result, "quick report");
+  assert.equal(quickResult.telemetry.requests, 1);
+});
+
+test("a child that ignores tool wrap-up cannot keep spending its unused request balance", async (t) => {
+  const f = await fixture(t, {
+    speed: 0,
+    response: () =>
+      fauxAssistantMessage(fauxToolCall("read", { path: "missing.txt" }), {
+        stopReason: "toolUse",
+      }),
+  });
+  const ref = await f.direct("keep calling tools", "scout", { limits: { requests: 10, tools: 3 } });
+  const result = await f.coordinator.wait(ref);
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.limitReason, "tools");
+  assert.match(result.error!, /reserved reporting requests exhausted/);
+  assert.equal(result.telemetry.requests, 3);
+  assert.equal(result.toolCalls, 2);
+});
+
 test("whole batch preflight launches nothing for an invalid later assignment, grant or limit", async (t) => {
   const f = await fixture(t);
   for (const invalid of [
