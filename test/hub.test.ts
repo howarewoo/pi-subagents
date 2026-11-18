@@ -2546,103 +2546,122 @@ const delayed = {
 } as const;
 for (const action of ["stop", "steer", "message", "wait"] as const)
   for (const outcome of ["success", "error"] as const)
-    test(`Hub delayed ${action} ${outcome} stays attributed to A while browsing B, filtering and a new generation`, async (t) => {
-      const coordinator = new DelegationCoordinator("unused", "root");
-      const changed = registryChanges(t, coordinator);
-      const a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
-      const children = [
-        snapshot(a, { assignment: "alpha audit", generation: 7 }),
-        snapshot(b, { assignment: "beta audit", generation: 9 }),
-      ];
-      t.mock.method(coordinator, "list", () => structuredClone(children));
-      t.mock.method(coordinator, "messages", () => []);
-      t.mock.method(coordinator, "snapshot", (ref: ChildRef) =>
-        structuredClone(
-          children.find((child) => child.id === ref.id && child.generation === ref.generation),
-        ),
-      );
-      let settle!: () => void, fail!: (error: Error) => void;
-      const finished = new Promise<void>((resolve, reject) => {
-        settle = resolve;
-        fail = reject;
-      });
-      const dispatched: ChildRef[] = [];
-      const respond =
-        <T>(value: T) =>
-        async (...args: unknown[]) => {
-          const ref = args.find(
-            (arg): arg is ChildRef => typeof arg === "object" && arg !== null && "id" in arg,
-          )!;
-          dispatched.push({ id: ref.id, generation: ref.generation });
-          await finished;
-          return value;
-        };
-      t.mock.method(coordinator, "stop", respond(undefined));
-      t.mock.method(coordinator, "steer", respond("queued"));
-      t.mock.method(coordinator, "message", respond({ id: "receipt-1", status: "queued" }));
-      t.mock.method(coordinator, "coordinateWait", respond({ status: "timeout" }));
-      let renders = 0;
-      const hub = createHub(
-        coordinator,
-        theme,
-        hubBindings(),
-        () => renders++,
-        () => {},
-        dependencies,
-        () => 21,
-      );
-      const output = () => flat(hub.render(72));
-      const { key, submit, label, pending } = delayed[action];
-      const who = `${a} #7 · alpha audit · scout`;
-      try {
-        output();
-        hub.handleInput!(key);
-        if (action === "steer" || action === "message") hub.handleInput!("check shutdown");
-        if (submit) {
-          output();
-          hub.handleInput!(submit);
-        }
-        await new Promise((resolve) => setImmediate(resolve));
-        assert.ok(output().includes(`${label} ${who}: ${pending}`), "pending names A");
-        hub.handleInput!("\x1b[B");
-        hub.handleInput!("/");
-        hub.handleInput!("beta");
-        hub.handleInput!("\r");
-        children[0] = { ...children[0], generation: 8 };
-        changed(children[0]);
-        assert.match(output(), /beta audit · scout/);
-        assert.ok(
-          output().includes(`${label} ${who}: ${pending}`),
-          "pending retains A while browsing B",
+    for (const [width, height] of [
+      [72, 21],
+      [54, 12],
+    ])
+      test(`Hub delayed ${action} ${outcome} at ${width}×${height} stays attributed to A while browsing B, filtering and a new generation`, async (t) => {
+        const coordinator = new DelegationCoordinator("unused", "root");
+        const changed = registryChanges(t, coordinator);
+        const a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        const children = [
+          snapshot(a, { assignment: "alpha audit", generation: 7 }),
+          snapshot(b, { assignment: "beta audit", generation: 9 }),
+        ];
+        t.mock.method(coordinator, "list", () => structuredClone(children));
+        t.mock.method(coordinator, "messages", () => []);
+        t.mock.method(coordinator, "snapshot", (ref: ChildRef) =>
+          structuredClone(
+            children.find((child) => child.id === ref.id && child.generation === ref.generation),
+          ),
         );
-        assert.doesNotMatch(output(), /stopped and drained/, "stop success waits for drain");
-        if (outcome === "success") settle();
-        else fail(new Error("provider refused"));
-        await new Promise((resolve) => setImmediate(resolve));
-        await new Promise((resolve) => setImmediate(resolve));
-        const text = output();
-        const expected =
-          outcome === "error"
-            ? `${label} ${who} failed: Error: provider refused`
-            : {
-                stop: `Stop ${who}: stopped and drained`,
-                steer: `Steer ${who}: queued · NOT model acknowledgment`,
-                message: `Inbox ${who}: message receipt-1 · queued · NOT model acknowledgment`,
-                wait: `Wait ${who}: {"status":"timeout"}`,
-              }[action];
-        assert.ok(text.includes(expected), `${expected}\n${text}`);
-        assert.ok(!text.includes(`${b} #9`) && !text.includes(`${a} #8`), "never retargets");
-        assert.deepEqual(dispatched, [{ id: a, generation: 7 }]);
-        hub.dispose();
-        const after = renders;
-        children[1] = { ...children[1], status: "settled" };
-        changed(children[1]);
-        assert.equal(renders, after, "disposed Hub ignores later events");
-      } finally {
-        hub.dispose();
-      }
-    });
+        let settle!: () => void, fail!: (error: Error) => void;
+        const finished = new Promise<void>((resolve, reject) => {
+          settle = resolve;
+          fail = reject;
+        });
+        const dispatched: ChildRef[] = [];
+        const respond =
+          <T>(value: T) =>
+          async (...args: unknown[]) => {
+            const ref = args.find(
+              (arg): arg is ChildRef => typeof arg === "object" && arg !== null && "id" in arg,
+            )!;
+            dispatched.push({ id: ref.id, generation: ref.generation });
+            await finished;
+            return value;
+          };
+        t.mock.method(coordinator, "stop", respond(undefined));
+        t.mock.method(coordinator, "steer", respond("queued"));
+        t.mock.method(coordinator, "message", respond({ id: "receipt-1", status: "queued" }));
+        t.mock.method(coordinator, "coordinateWait", respond({ status: "timeout" }));
+        let renders = 0;
+        const hub = createHub(
+          coordinator,
+          theme,
+          hubBindings(),
+          () => renders++,
+          () => {},
+          dependencies,
+          () => height,
+        );
+        const output = () => {
+          const lines = hub.render(width);
+          assert.ok(lines.length <= height);
+          assert.ok(lines.every((line) => visibleWidth(line) <= width));
+          return flat(lines);
+        };
+        const { key, submit, label, pending } = delayed[action];
+        const who = `${a} #7 · alpha audit · scout`;
+        try {
+          output();
+          hub.handleInput!(key);
+          if (action === "steer" || action === "message") hub.handleInput!("check shutdown");
+          if (submit) {
+            output();
+            hub.handleInput!(submit);
+          }
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.ok(output().includes(`${label} ${who}: ${pending}`), "pending names A");
+          hub.handleInput!("\x1b[B");
+          assert.ok(
+            output().includes(`${label} ${who}: ${pending}`),
+            "optional browse hints yield to the complete original-target notice",
+          );
+          hub.handleInput!("/");
+          hub.handleInput!("beta");
+          hub.handleInput!("\r");
+          children[0] = { ...children[0], generation: 8 };
+          changed(children[0]);
+          assert.match(output(), /beta audit · scout/);
+          assert.ok(
+            output().includes(`${label} ${who}: ${pending}`),
+            "pending retains A while browsing B",
+          );
+          assert.doesNotMatch(output(), /stopped and drained/, "stop success waits for drain");
+          hub.handleInput!("?");
+          assert.ok(
+            output().includes(`${label} ${who}: ${pending}`),
+            "help retains the whole notice",
+          );
+          hub.handleInput!("?");
+          if (outcome === "success") settle();
+          else fail(new Error("provider refused"));
+          await new Promise((resolve) => setImmediate(resolve));
+          await new Promise((resolve) => setImmediate(resolve));
+          const text = output();
+          const expected =
+            outcome === "error"
+              ? `${label} ${who} failed: Error: provider refused`
+              : {
+                  stop: `Stop ${who}: stopped and drained`,
+                  steer: `Steer ${who}: queued · NOT model acknowledgment`,
+                  message: `Inbox ${who}: message receipt-1 · queued · NOT model acknowledgment`,
+                  wait: `Wait ${who}: {"status":"timeout"}`,
+                }[action];
+          assert.ok(text.includes(expected), `${expected}\n${text}`);
+          assert.ok(!text.includes(`${b} #9`) && !text.includes(`${a} #8`), "never retargets");
+          assert.deepEqual(dispatched, [{ id: a, generation: 7 }]);
+          hub.dispose();
+          const after = renders;
+          children[1] = { ...children[1], status: "settled" };
+          changed(children[1]);
+          assert.equal(renders, after, "disposed Hub ignores later events");
+        } finally {
+          hub.dispose();
+        }
+      });
 
 test("Hub park notices retain exact target identity and label", (t) => {
   const coordinator = new DelegationCoordinator("unused", "root");

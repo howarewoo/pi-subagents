@@ -300,13 +300,14 @@ export function createHub(
       const keyNames = (action: Parameters<typeof keybindings.getKeys>[0]) =>
         keybindings.getKeys(action).join("/") || "unbound";
       const footer: string[] = [];
+      const noticeLines: string[] = [];
       if (query)
         footer.push(
           theme.fg("muted", `Filter: ${lineText(query)} · ${children.length} generations`),
         );
       if (notice) {
         const lines = wrapTextWithAnsi(lineText(notice), Math.max(1, inner));
-        footer.push(
+        noticeLines.push(
           ...lines
             .slice(0, 3)
             .map((line, index) =>
@@ -337,9 +338,12 @@ export function createHub(
           `${keyNames("app.tools.expand")}  Toggle all tool output (thread view)`,
           `${close || "unbound"}  Close the Hub; tasks keep running`,
         ].flatMap((line) => wrapTextWithAnsi(line, Math.max(1, inner)));
-        const shown = [...footer, `? or ${keyNames("tui.select.cancel")}: back to Hub`].slice(
-          -Math.max(1, Math.min(4, height - 5)),
-        );
+        const footerBudget = Math.max(1, Math.min(4, height - 5));
+        const shown = [
+          ...(noticeLines.length < footerBudget ? noticeLines : []),
+          `? or ${keyNames("tui.select.cancel")}: back to Hub`,
+        ];
+        if (query && shown.length < footerBudget) shown.unshift(...footer);
         const bodyRows = Math.max(0, height - 3 - shown.length);
         help.offset = Math.max(0, Math.min(help.offset, body.length - bodyRows));
         if (body.length > bodyRows) shown[shown.length - 1] += " · j/k scroll";
@@ -414,10 +418,16 @@ export function createHub(
         footer.push(
           `Tools ${toolsExpanded ? "expanded" : "collapsed"} · ${keybindings.getKeys("app.tools.expand").join("/") || "unbound"}: toggle all`,
         );
-      // A pinned target and its controls are indivisible; optional hints must yield first.
+      // Targets, controls and notices are indivisible; optional hints must yield first.
       const requiredFooter = interactionTarget ? targetLines.length + 2 : 0;
-      const shownFooter =
-        requiredFooter || height >= 8 ? footer.slice(-Math.max(2, height - 7, requiredFooter)) : [];
+      const footerBudget =
+        requiredFooter || height >= 8 ? Math.max(2, height - 7, requiredFooter) : 0;
+      const shownNotice = noticeLines.length <= footerBudget - requiredFooter ? noticeLines : [];
+      const optionalBudget = footerBudget - shownNotice.length;
+      const shownFooter = [
+        ...shownNotice,
+        ...(optionalBudget ? footer.slice(-optionalBudget) : []),
+      ];
       if (interactionTarget) interactionVisibleAtHeight = height;
       const separatorRows = shownFooter.length ? 1 : 0;
       const paneHeight = Math.max(1, height - 2 - shownFooter.length - separatorRows);
