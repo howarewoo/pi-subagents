@@ -30,19 +30,23 @@ import { profileModelReason, type ProfileModelCatalog } from "../src/profile-mod
 
 const keys = {
   matches: (data: string, action: string) =>
+    (action === "tui.select.cancel" && data === "\x03") ||
     data ===
-    (
-      {
-        "tui.select.cancel": "\x1b",
-        "tui.select.confirm": "\r",
-        "tui.select.up": "up",
-        "tui.select.down": "down",
-        "tui.select.pageUp": "pgup",
-        "tui.select.pageDown": "pgdown",
-      } as Record<string, string>
-    )[action],
+      (
+        {
+          "tui.select.cancel": "\x1b",
+          "tui.select.confirm": "\r",
+          "tui.input.submit": "\r",
+          "tui.select.up": "up",
+          "tui.select.down": "down",
+          "tui.select.pageUp": "pgup",
+          "tui.select.pageDown": "pgdown",
+        } as Record<string, string>
+      )[action],
   getKeys: (action: string) =>
-    action === "tui.select.confirm" ? ["enter" as const] : ["escape" as const],
+    action === "tui.select.confirm" || action === "tui.input.submit"
+      ? ["enter" as const]
+      : ["escape" as const, "ctrl+c" as const],
 };
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -103,10 +107,11 @@ async function files(
     projectPath = join(root, ".pi", "delegation.json");
   await fs.writeFile(globalPath, JSON.stringify(global));
   await fs.writeFile(projectPath, JSON.stringify(project));
+  let trusted = true;
   const options: ProfileDraftOptions = {
     cwd: root,
     operatorDir: join(root, "operator"),
-    isProjectTrusted: () => true,
+    isProjectTrusted: () => trusted,
     coordinator: { profileUsage: () => [] },
   };
   return {
@@ -116,6 +121,9 @@ async function files(
     global,
     project,
     options,
+    setTrusted(value: boolean) {
+      trusted = value;
+    },
     disk: async () => JSON.parse(await fs.readFile(globalPath, "utf8")),
   };
 }
@@ -1286,4 +1294,316 @@ test("physical 80×28 Global Add uses the production 90% overlay and accepts eve
       assert.deepEqual((await f.disk()).general.models, [target]);
       assert.equal(f.controller.status, "saved");
     });
+});
+
+const ctrlLeft = "\x1b[1;5D";
+
+test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across profile browsing; Resume submits once; Escape cancels only the active buffer", async (t) => {
+  const f = await inspector(t);
+  let writes = 0;
+  const rename = fs.rename;
+  t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+    writes++;
+    return rename(...args);
+  });
+  f.open("Description");
+  f.activate("Description");
+  f.input("\x05", "\x15", "ab cd", ctrlLeft, "X");
+  assert.equal(f.controller.pending.length, 0);
+  f.input("\t"); // Existing single-line blur commit, exactly once.
+  await f.controller.settled();
+  assert.equal((await f.disk()).general.description, "ab Xcd");
+  assert.equal(writes, 1);
+  f.input("\t");
+  f.open("Models");
+  f.activate("Add to chain / Add and grant");
+  f.input("ab cd", ctrlLeft, "X");
+  assert.match(f.render().replaceAll(/\x1b_pi:\/?f?c\x07/g, ""), /Search: ab Xcd/);
+  assert.equal(f.controller.pending.length, 0);
+  f.input("\x1b");
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
+  f.input("\x01", "\x0b", "draft one two", ctrlLeft, "X");
+  assert.equal(f.exit().exited, false);
+  f.input("\t", "down"); // Suspend, then browse scout in the rail.
+  let output = f.render();
+  assert.match(output, /Subagent Profiles \/ scout .*1 unsaved draft/);
+  assert.match(output, /general \[draft\]/);
+  assert.match(output, /Resume Global general\.prompt draft/);
+  assert.equal(f.controller.pending.length, 0);
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
+  f.input("\x01", "\x0b", "scout abandoned", "\x1b"); // Cancels only scout's active buffer.
+  assert.match(f.render(), /Resume Global general\.prompt draft/);
+  assert.doesNotMatch(f.render(), /scout\.prompt/);
+  f.activate("Resume Global general.prompt draft");
+  output = f.render().replaceAll(/\x1b_pi:\/?f?c\x07/g, "");
+  assert.match(output, /Subagent Profiles \/ general/);
+  assert.match(output, /draft one Xtwo/);
+  f.input("\r");
+  assert.deepEqual(
+    f.controller.pending.map(({ profile, field }) => `${profile}.${field}`),
+    ["general.prompt"],
+  );
+  await f.controller.settled();
+  assert.equal((await f.disk()).general.prompt, "draft one Xtwo");
+  assert.equal((await f.disk()).scout, undefined);
+  assert.equal(writes, 2);
+  assert.doesNotMatch(f.render(), /unsaved draft|Resume Global/);
+  // Opening without changing creates no draft or exit prompt.
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
+  f.input("\t", "\t", "\x1b", "\x1b");
+  assert.equal(f.exit().exited, true);
+});
+
+test("an earlier save failure retains another draft; repeated failures, Retry and Revert never submit it; Reload asks with draft and queued counts", async (t) => {
+  const f = await inspector(t);
+  const reload = t.mock.method(f.controller, "reload");
+  const open = fs.open;
+  let fail = true;
+  const gate = deferred();
+  t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    if (fail && String(args[0]).endsWith(".tmp")) {
+      await gate.promise;
+      throw new Error("injected permission failure");
+    }
+    return open(...args);
+  });
+  f.input("\t", "down", "\t");
+  f.open("Description");
+  f.activate("Description");
+  f.input("\x05", "\x15", "scout change", "\r");
+  assert.equal(f.controller.pending.length, 1);
+  f.input("\t", "up", "\t");
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
+  f.input("\x01", "\x0b", "general draft");
+  f.resize(72, 21); // Recovery + Resume + Reload disposition at physical 80×24 baseline.
+  gate.resolve();
+  await f.controller.settled();
+  assert.equal(f.controller.status, "not-saved");
+  let output = f.render();
+  assert.match(output, /1 unsaved drafts retained · Resume below; never auto-submitted/);
+  assert.match(output, /› Retry same action/);
+  assert.equal(f.controller.pending.length, 1);
+  // Retained text is readable/editable while frozen, but submission never enqueues.
+  f.activate("Resume Global general.prompt draft");
+  f.input("\r");
+  assert.match(f.render(), /Not saved: editing is paused or read-only; text kept/);
+  assert.match(f.render(), /general draft/);
+  assert.equal(f.controller.pending.length, 1);
+  f.input("\t");
+  f.activate("Retry same action"); // Repeated failure notification.
+  await f.controller.settled();
+  assert.equal(f.controller.status, "not-saved");
+  assert.equal(f.controller.pending.length, 1);
+  f.go("Resume Global general.prompt draft");
+  assert.match(f.render(), /Resume Global general\.prompt draft/);
+  f.activate("Revert");
+  assert.equal(f.controller.pending.length, 0);
+  assert.match(f.render(), /Resume Global general\.prompt draft/);
+  assert.equal((await f.disk()).scout, undefined);
+  assert.equal((await f.disk()).general.prompt, "Global instructions");
+  // External edit makes the next failure Reload-only.
+  fail = false;
+  await fs.writeFile(f.projectPath, JSON.stringify({ review: { description: "external" } }));
+  f.open("Description");
+  f.activate("Description");
+  f.input("\x05", "\x15", "conflicted", "\r");
+  await f.controller.settled();
+  assert.equal(f.controller.status, "reload-required");
+  f.activate("Reload · abandon 1 unsaved changes + 1 drafts");
+  output = f.render();
+  assert.match(output, /Reload would discard 1 unsaved draft/);
+  assert.match(output, /Global general\.prompt: general draft/);
+  assert.match(output, /Reload also abandons 1 queued unsaved changes/);
+  assert.match(output, /› Keep drafts and return \(default\)/);
+  f.input("\r"); // Default keeps; no Reload.
+  assert.equal(f.controller.status, "reload-required");
+  f.go("Resume Global general.prompt draft");
+  assert.match(f.render(), /Resume Global general\.prompt draft/);
+  f.activate("Reload · abandon");
+  f.input("\x1b"); // Escape also keeps.
+  assert.equal(f.controller.status, "reload-required");
+  f.activate("Reload · abandon");
+  f.activate("Discard 1 draft and continue: Reload");
+  assert.equal(reload.mock.callCount(), 1);
+  await reload.mock.calls[0]!.result; // Await the UI-triggered reopen, not event-loop turns.
+  assert.equal(f.controller.status, "saved");
+  assert.equal(f.controller.pending.length, 0);
+  assert.doesNotMatch(f.render(), /Resume Global|unsaved draft/);
+  assert.equal((await f.disk()).general.description, "Global description");
+});
+
+test("close, destination, structural and field reset ask keep-or-discard for owned drafts; unrelated toggles do not", async (t) => {
+  const f = await inspector(t);
+  const draft = () => {
+    f.open("Instructions");
+    f.activate("Instructions (prompt)");
+    f.input("\x01", "\x0b", "keep me", "\t", "\t");
+  };
+  draft();
+  f.open("Tools");
+  f.activate("[x] write"); // Unrelated toggle saves immediately without a prompt.
+  assert.equal(f.controller.pending.length, 1);
+  await f.controller.settled();
+  f.input("1", "\x1b");
+  assert.match(f.render(), /Close would discard 1 unsaved draft/);
+  f.input("\t", "2", "\r"); // Modal: Tab/group jumps ignored; Enter is the default keep.
+  assert.equal(f.exit().exited, false);
+  assert.match(f.render(), /Resume Global general\.prompt draft/);
+  f.open("Instructions");
+  f.activate("Reset prompt to inherited");
+  assert.match(f.render(), /Reset prompt would discard 1 unsaved draft/);
+  f.input("\x1b");
+  assert.equal(f.controller.pending.length, 0);
+  f.activate("Reset prompt to inherited");
+  f.activate("Discard 1 draft and continue: Reset prompt");
+  assert.deepEqual(f.controller.pending.at(-1), {
+    destination: "global",
+    profile: "general",
+    field: "prompt",
+    action: "reset",
+  });
+  await f.controller.settled();
+  assert.doesNotMatch(f.render(), /Resume Global/);
+  draft();
+  f.open("Advanced");
+  f.activate("Create / copy custom role");
+  assert.match(f.render(), /Structural transaction would discard 1 unsaved draft/);
+  f.input("\r");
+  assert.equal(f.exit().exited, false);
+  f.activate("Change destination explicitly");
+  assert.match(f.render(), /Change destination would discard 1 unsaved draft/);
+  f.activate("Discard 1 draft and continue: Change destination");
+  assert.deepEqual(f.exit(), {
+    exited: true,
+    result: { profile: "general", action: "destination" },
+  });
+  assert.equal((await f.disk()).general.prompt, undefined);
+});
+
+test("physical 80×24 overlay keeps draft decision usable; subminimum resize preserves drafts with accurate Escape hints", async (t) => {
+  const f = await inspector(t);
+  f.resize(72, 21);
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
+  f.input("\x01", "\x0b", "baseline draft");
+  const footer = f.render().split("\n").at(-2)!;
+  assert.match(footer, /enter: commit · Tab: keep draft · escape\/ctrl\+c: discard text/);
+  assert.doesNotMatch(footer, /\.\.\.|…/);
+  f.input("\t", "\t");
+  f.resize(54, 14); // Physical 60×16 under the 90% overlay.
+  assert.match(f.render(), /1 drafts kept/);
+  assert.match(f.render(), /escape\/ctrl\+c: back/);
+  f.input("\x1b");
+  assert.match(f.render(), /Enlarge to resume or discard drafts/);
+  f.input("\x1b", "\r");
+  assert.equal(f.exit().exited, false);
+  f.resize(72, 21);
+  f.input("\x1b");
+  const output = f.render();
+  assert.match(output, /Close would discard 1 unsaved draft/);
+  assert.match(output, /› Keep drafts and return/);
+  assert.match(output, /Discard 1 draft and continue: Close/);
+  assert.match(output, /escape\/ctrl\+c keep drafts/);
+  f.activate("Discard 1 draft and continue: Close");
+  assert.deepEqual(f.exit(), { exited: true, result: undefined });
+  assert.equal((await f.disk()).general.prompt, "Global instructions");
+});
+
+test("trust loss keeps an active Project draft readable without enqueueing or reading untrusted layers", async (t) => {
+  const f = await inspector(t, undefined, {}, "project");
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
+  f.input("\x01", "\x0b", "project draft");
+  f.setTrusted(false);
+  f.input("\r");
+  assert.match(f.render(), /Not saved: editing is paused or read-only; text kept/);
+  assert.match(f.render(), /project draft/);
+  assert.equal(f.controller.pending.length, 0);
+  f.input("\t");
+  assert.match(f.render(), /Resume Project general\.prompt draft/);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.projectPath, "utf8")), {});
+});
+
+test("successful Retry keeps an interrupted invalid exact entry and never enqueues it; correction stays bound to its owner", async (t) => {
+  const f = await inspector(t);
+  const open = fs.open;
+  const gate = deferred();
+  let fail = true;
+  t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    if (fail && String(args[0]).endsWith(".tmp")) {
+      await gate.promise;
+      throw new Error("first save fails");
+    }
+    return open(...args);
+  });
+  f.open("Description");
+  f.activate("Description");
+  f.input("\x05", "\x15", "accepted", "\r");
+  f.input("\t", "down", "\t");
+  f.open("Skills");
+  f.activate("Add exact absolute skill path");
+  f.input("relative invalid entry");
+  gate.resolve();
+  await f.controller.settled();
+  assert.equal(f.controller.pending.length, 1);
+  f.activate("Resume Global scout.skills draft");
+  assert.match(f.render(), /relative invalid entry/);
+  assert.match(f.render(), /Paused · Tab: keep draft · escape\/ctrl\+c: discard text/);
+  f.input("\r", "\t"); // Paused: no validation enqueue or blur save.
+  assert.equal(f.controller.pending.length, 1);
+  fail = false;
+  f.activate("Retry same action");
+  await f.controller.settled();
+  assert.equal((await f.disk()).general.description, "accepted");
+  assert.equal((await f.disk()).scout, undefined);
+  assert.equal(f.controller.pending.length, 0);
+  assert.match(f.render(), /Resume Global scout.skills draft/);
+  f.activate("Resume Global scout.skills draft");
+  f.input("\t"); // Recovered: original single-line validation still retains invalid entry.
+  assert.match(f.render(), /Use an exact absolute skill path/);
+  assert.match(f.render(), /relative invalid entry/);
+  assert.equal(f.controller.pending.length, 0);
+  const skill = join(f.root, "SKILL.md");
+  await fs.writeFile(skill, "---\nname: resumed\ndescription: Resumed fixture\n---\nInstructions");
+  f.input("\x05", "\x15", skill, "\r");
+  assert.equal(f.controller.pending.at(-1)?.profile, "scout");
+  await f.controller.settled();
+  assert.deepEqual((await f.disk()).scout.skills, [skill]);
+});
+
+test("frozen multiline native submit preserves exact whitespace; confirmed draft discard remains discarded when Reload fails", async (t) => {
+  const f = await inspector(t);
+  const reload = t.mock.method(f.controller, "reload");
+  f.open("Instructions");
+  f.activate("Instructions (prompt)");
+  f.input("\x01", "\x0b", "  exact buffer  ", "\t", "\t");
+  await fs.writeFile(f.projectPath, JSON.stringify({ review: { description: "external" } }));
+  f.open("Description");
+  f.activate("Description");
+  f.input("\x05", "\x15", "conflicted", "\r");
+  await f.controller.settled();
+  assert.equal(f.controller.status, "reload-required");
+  f.activate("Resume Global general.prompt draft");
+  f.input("\r", "\t", "\t");
+  f.activate("Resume Global general.prompt draft");
+  // The preserved native buffer includes both leading and trailing spaces even after paused Enter.
+  const plain = f.render().replaceAll(/\x1b_pi:\/?f?c\x07/g, "");
+  assert.match(plain, /  exact buffer {2}/);
+  f.input("\t", "\t");
+  f.activate("Reload · abandon");
+  assert.match(f.render(), /exact buffer   \(16 chars\)/);
+  await fs.writeFile(f.projectPath, "{ malformed");
+  f.activate("Discard 1 draft and continue: Reload");
+  assert.equal(reload.mock.callCount(), 1);
+  await reload.mock.calls[0]!.result;
+  assert.ok(f.controller.reloadError);
+  assert.equal(f.controller.status, "read-only");
+  assert.equal(f.controller.pending.length, 0);
+  assert.doesNotMatch(f.render(), /Resume Global|unsaved draft/);
+  f.activate("Close · finish verified saves first");
+  assert.equal(f.exit().exited, true);
 });
