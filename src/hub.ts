@@ -31,6 +31,18 @@ import {
   transcriptLines,
 } from "./task-presentation.ts";
 
+/** Greedy " · " packing so every named control survives narrow widths as whole tokens. */
+function packHints(tokens: string[], width: number) {
+  const lines: string[] = [];
+  for (const token of tokens) {
+    const last = lines.at(-1);
+    if (last !== undefined && visibleWidth(last) + 3 + visibleWidth(token) <= width)
+      lines[lines.length - 1] = `${last} · ${token}`;
+    else lines.push(...wrapTextWithAnsi(token, Math.max(1, width)));
+  }
+  return lines;
+}
+
 type Palette = Pick<Theme, "fg" | "style"> & { colors: Pick<Theme["colors"], "customMessageBg"> };
 /** Observation only: closing or disposing never touches child execution. */
 export function createHub(
@@ -45,6 +57,7 @@ export function createHub(
   let selected: string | undefined;
   let query = "";
   let interactionTarget: ChildRef | undefined;
+  let interactionLabel = "";
   let interactionVisibleAtHeight: number | undefined;
   let mode: "browse" | "search" | "steer" | "message" | "stop" = "browse";
   let tab: "thread" | "details" | "tools" = "thread";
@@ -56,6 +69,8 @@ export function createHub(
   let threadBounds: { x: number; y: number; width: number; height: number } | undefined;
   let viewport = 1;
   let notice = "";
+  // Observation-only overlay: browse state underneath stays untouched until explicit return.
+  let help: { offset: number } | undefined;
   let disposed = false;
   const input = new Input();
   const nativeThread = createNativeThread(dependencies);
@@ -154,13 +169,12 @@ export function createHub(
     if (tab === "thread") following = delta > 0 && offset === maxOffset;
     refresh();
   };
-  const control = async (target: ChildRef, text?: string, message = false) => {
-    notice =
-      text === undefined
-        ? "Stopping and draining…"
-        : message
-          ? "Sending inbox message…"
-          : "Sending steering…";
+  // Captured when a control opens: later selection, filtering or generations never retarget it.
+  const describe = (child: ChildSnapshot) =>
+    `${child.id} #${child.generation} · ${truncateToWidth(lineText(agentLabel(child)), 32)}`;
+  const control = async (target: ChildRef, who: string, text?: string, message = false) => {
+    const action = text === undefined ? "Stop" : message ? "Inbox" : "Steer";
+    notice = `${action} ${who}: ${text === undefined ? "stopping and draining…" : "sending…"}`;
     refresh();
     try {
       const child = coordinator.snapshot(target);
@@ -176,34 +190,40 @@ export function createHub(
         );
       if (text === undefined) {
         await coordinator.stop(target);
-        notice = "Stopped and drained";
+        notice = `Stop ${who}: stopped and drained`;
       } else if (message) {
         const receipt = await coordinator.message(undefined, target, text);
-        notice = `Message ${receipt.id} · ${receipt.status} · NOT model acknowledgment${receipt.error ? ` · ${receipt.error}` : ""}`;
-      } else notice = `Steering ${await coordinator.steer(target, text)}`;
+        notice = `Inbox ${who}: message ${receipt.id} · ${receipt.status} · NOT model acknowledgment${receipt.error ? ` · ${receipt.error}` : ""}`;
+      } else
+        notice = `Steer ${who}: ${await coordinator.steer(target, text)} · NOT model acknowledgment`;
     } catch (error) {
-      notice = String(error);
+      notice = `${action} ${who} failed: ${String(error)}`;
     }
     refresh();
   };
-  const observeControl = async (target: ChildRef, action: "wait" | "park") => {
+  const observeControl = async (target: ChildRef, who: string, action: "wait" | "park") => {
     try {
       if (action === "park") {
         coordinator.park(target);
-        notice = "Parked (session already disposed)";
+        notice = `Park ${who}: parked (session already disposed)`;
       } else {
-        notice = "Waiting up to 1000ms (not model acknowledgment)…";
+        notice = `Wait ${who}: waiting up to 1000ms (not model acknowledgment)…`;
         refresh();
-        notice = JSON.stringify(await coordinator.coordinateWait(undefined, target, 1000));
+        notice = `Wait ${who}: ${JSON.stringify(await coordinator.coordinateWait(undefined, target, 1000))}`;
       }
     } catch (error) {
-      notice = String(error);
+      notice = `${action === "park" ? "Park" : "Wait"} ${who} failed: ${String(error)}`;
     }
     refresh();
   };
+  const bindingHint = (action: Parameters<typeof keybindings.getKeys>[0]) =>
+    keybindings
+      .getKeys(action)
+      .map((key) => key.replaceAll("escape", "Esc").replaceAll("enter", "Enter"))
+      .join("/") || "unbound";
   const canSubmitInteraction = () => {
     if (interactionVisibleAtHeight === Math.max(1, availableRows())) return true;
-    notice = "Resize for controls · Esc cancels; no action sent";
+    notice = `Resize for controls · ${bindingHint("tui.select.cancel")} cancels; no action sent`;
     refresh();
     return false;
   };
@@ -214,7 +234,7 @@ export function createHub(
       offset = 0;
       following = tab === "thread";
     } else if ((mode === "steer" || mode === "message") && interactionTarget)
-      void control(interactionTarget, input.getValue(), mode === "message");
+      void control(interactionTarget, interactionLabel, input.getValue(), mode === "message");
     interactionTarget = undefined;
     mode = "browse";
     input.setValue("");
@@ -240,7 +260,11 @@ export function createHub(
       };
       if (width < 4 || height < 3)
         return [
-          paint(interactionTarget ? "Resize · Esc cancels" : "Subagent Hub " + roster().total),
+          paint(
+            interactionTarget
+              ? `Resize · ${bindingHint("tui.select.cancel")} cancels`
+              : "Subagent Hub " + roster().total,
+          ),
         ];
       const inner = Math.max(0, width - 4);
       const row = (text: string) => {
@@ -273,14 +297,17 @@ export function createHub(
           ...keybindings.getKeys("tui.select.confirm"),
         ]),
       ].join("/");
+      const keyNames = (action: Parameters<typeof keybindings.getKeys>[0]) =>
+        keybindings.getKeys(action).join("/") || "unbound";
       const footer: string[] = [];
+      const noticeLines: string[] = [];
       if (query)
         footer.push(
           theme.fg("muted", `Filter: ${lineText(query)} · ${children.length} generations`),
         );
       if (notice) {
         const lines = wrapTextWithAnsi(lineText(notice), Math.max(1, inner));
-        footer.push(
+        noticeLines.push(
           ...lines
             .slice(0, 3)
             .map((line, index) =>
@@ -293,6 +320,44 @@ export function createHub(
             ),
         );
       }
+      if (help) {
+        // Rendering help never touches browse offsets, selection or reading anchors.
+        const body = [
+          "HELP · observation only; keys here never send an action",
+          `${keyNames("tui.select.up")} / ${keyNames("tui.select.down")}  Select task or generation`,
+          "j / k  Scroll one line",
+          `Ctrl+u/d, ${keyNames("tui.select.pageUp")} / ${keyNames("tui.select.pageDown")}  Scroll a page`,
+          "Home / End  Top / follow the live thread",
+          "Tab  Next view: thread → details → tools",
+          `/  Filter tasks; ${keyNames("tui.select.cancel")} keeps the previous filter`,
+          "s  Steer a running task (pinned target)",
+          "m  Inbox message; a receipt is not model acknowledgment",
+          "x, then y  Stop subtree; reported after drain; Enter never confirms",
+          "w  Wait up to 1000ms for an outcome",
+          "p  Park a disposed idle task",
+          `${keyNames("app.tools.expand")}  Toggle all tool output (thread view)`,
+          `${close || "unbound"}  Close the Hub; tasks keep running`,
+        ].flatMap((line) => wrapTextWithAnsi(line, Math.max(1, inner)));
+        const footerBudget = Math.max(1, Math.min(4, height - 5));
+        const shown = [
+          ...(noticeLines.length < footerBudget ? noticeLines : []),
+          `? or ${keyNames("tui.select.cancel")}: back to Hub`,
+        ];
+        if (query && shown.length < footerBudget) shown.unshift(...footer);
+        const bodyRows = Math.max(0, height - 3 - shown.length);
+        help.offset = Math.max(0, Math.min(help.offset, body.length - bodyRows));
+        if (body.length > bodyRows) shown[shown.length - 1] += " · j/k scroll";
+        return [
+          frame("╭", " Subagent Hub · Help ", "╮"),
+          ...body
+            .slice(help.offset, help.offset + bodyRows)
+            .map((line) => row(theme.fg("text", line))),
+          ...Array(Math.max(0, bodyRows - (body.length - help.offset))).fill(row("")),
+          ...(height > 3 ? [paint(theme.fg("border", "├" + "─".repeat(width - 2) + "┤"))] : []),
+          ...shown.map(row),
+          frame("╰", "", "╯"),
+        ].slice(0, height);
+      }
       const targetLines = interactionTarget
         ? wrapTextWithAnsi(
             `Target: ${interactionTarget.id} #${interactionTarget.generation}`,
@@ -301,9 +366,9 @@ export function createHub(
         : [];
       if (interactionTarget && (inner < 26 || height < targetLines.length + 6)) {
         return [
-          frame("╭", " Resize / Esc cancel ", "╮"),
+          frame("╭", ` Resize / ${bindingHint("tui.select.cancel")} cancel `, "╮"),
           ...targetLines.slice(0, height - 3).map(row),
-          row("Resize for controls · Esc cancels"),
+          row(`Resize for controls · ${bindingHint("tui.select.cancel")} cancels`),
           frame("╰", "", "╯"),
         ];
       }
@@ -313,30 +378,56 @@ export function createHub(
         const label = mode === "search" ? "Filter: " : mode === "message" ? "Inbox: " : "Steer: ";
         footer.push(
           label + input.render(Math.max(1, inner - visibleWidth(label)))[0],
-          "Enter submit · Esc back (no action)",
+          `${bindingHint("tui.select.confirm")} ${mode === "search" ? "apply filter" : "send"} · ${bindingHint("tui.select.cancel")} back (no action)`,
         );
       } else if (mode === "stop")
-        footer.push("Stop target? y confirms · Esc back", "Enter does not confirm stop");
-      else
         footer.push(
-          ...(wide
-            ? [
-                "↑↓ agents · j/k line · Ctrl+u/d or PgUp/Dn page · Home/End",
-                `${close}: close · / filter Tab view · s steer m inbox x stop · w wait p park`,
-              ]
-            : [
-                "↑↓ agent · j/k scroll · / Tab",
-                `End live · s/m/x · ${(keybindings.getKeys("tui.select.cancel")[0] ?? "Esc").replaceAll("escape", "Esc")}: close`,
-              ]),
+          `Stop target? y confirms · ${bindingHint("tui.select.cancel")} back`,
+          "Enter does not confirm stop",
         );
+      else {
+        const next = tab === "thread" ? "Details" : tab === "details" ? "Tools" : "Thread";
+        footer.push(
+          ...packHints(
+            [
+              ...(wide
+                ? [
+                    `${keyNames("tui.select.up")}/${keyNames("tui.select.down")} agents`,
+                    "j/k line",
+                    `Ctrl+u/d ${keyNames("tui.select.pageUp")}/${keyNames("tui.select.pageDown")} page`,
+                  ]
+                : [
+                    `${keyNames("tui.select.up")}/${keyNames("tui.select.down")} agent`,
+                    "j/k scroll",
+                    "End live",
+                  ]),
+              "s Steer",
+              "m Inbox",
+              "x Stop",
+              ...(wide ? ["w Wait", "p Park"] : []),
+              "/ Filter",
+              `Tab ${next}`,
+              "? Help",
+              `${close || "unbound"}: close`,
+            ],
+            inner,
+          ),
+        );
+      }
       if (mode === "browse" && tab === "thread")
         footer.push(
           `Tools ${toolsExpanded ? "expanded" : "collapsed"} · ${keybindings.getKeys("app.tools.expand").join("/") || "unbound"}: toggle all`,
         );
-      // A pinned target and its controls are indivisible; optional hints must yield first.
+      // Targets, controls and notices are indivisible; optional hints must yield first.
       const requiredFooter = interactionTarget ? targetLines.length + 2 : 0;
-      const shownFooter =
-        requiredFooter || height >= 8 ? footer.slice(-Math.max(2, height - 7, requiredFooter)) : [];
+      const footerBudget =
+        requiredFooter || height >= 8 ? Math.max(2, height - 7, requiredFooter) : 0;
+      const shownNotice = noticeLines.length <= footerBudget - requiredFooter ? noticeLines : [];
+      const optionalBudget = footerBudget - shownNotice.length;
+      const shownFooter = [
+        ...shownNotice,
+        ...(optionalBudget ? footer.slice(-optionalBudget) : []),
+      ];
       if (interactionTarget) interactionVisibleAtHeight = height;
       const separatorRows = shownFooter.length ? 1 : 0;
       const paneHeight = Math.max(1, height - 2 - shownFooter.length - separatorRows);
@@ -532,6 +623,15 @@ export function createHub(
       ];
     },
     handleInput(data) {
+      if (help) {
+        // Modal: only explicit return or help scrolling; underlying controls are unreachable.
+        if (data === "?" || keybindings.matches(data, "tui.select.cancel")) help = undefined;
+        else if (data === "j" || keybindings.matches(data, "tui.select.down")) help.offset++;
+        else if (data === "k" || keybindings.matches(data, "tui.select.up"))
+          help.offset = Math.max(0, help.offset - 1);
+        refresh();
+        return;
+      }
       if (keybindings.matches(data, "tui.select.cancel")) {
         if (mode !== "browse") {
           mode = "browse";
@@ -554,7 +654,7 @@ export function createHub(
       if (mode === "stop") {
         if (data === "y") {
           if (interactionTarget && !canSubmitInteraction()) return;
-          if (interactionTarget) void control(interactionTarget);
+          if (interactionTarget) void control(interactionTarget, interactionLabel);
           interactionTarget = undefined;
           mode = "browse";
         }
@@ -593,7 +693,6 @@ export function createHub(
         expansionAnchor = undefined;
         offset = 0;
         following = tab === "thread";
-        notice = "";
       } else if (keybindings.matches(data, "tui.select.pageUp") || matchesKey(data, "ctrl+u"))
         scrollBy(-viewport);
       else if (keybindings.matches(data, "tui.select.pageDown") || matchesKey(data, "ctrl+d"))
@@ -613,7 +712,8 @@ export function createHub(
         tab = tab === "thread" ? "details" : tab === "details" ? "tools" : "thread";
         offset = 0;
         following = tab === "thread";
-      } else if (data === "/") {
+      } else if (data === "?") help = { offset: 0 };
+      else if (data === "/") {
         mode = "search";
         input.setValue(query);
         // Native Input.setValue preserves its old cursor; a saved filter starts editing at its end.
@@ -624,6 +724,7 @@ export function createHub(
         else if (data === "w" || data === "p")
           void observeControl(
             { id: child.id, generation: child.generation },
+            describe(child),
             data === "w" ? "wait" : "park",
           );
         else {
@@ -641,6 +742,7 @@ export function createHub(
         ) {
           mode = data === "s" ? "steer" : data === "m" ? "message" : "stop";
           interactionTarget = { id: child.id, generation: child.generation };
+          interactionLabel = describe(child);
           interactionVisibleAtHeight = undefined;
           input.setValue("");
         } else
@@ -654,6 +756,7 @@ export function createHub(
       // Overlay wheels outside the reading viewport must not fall through to the main chat.
       if (
         mode === "browse" &&
+        !help &&
         threadBounds &&
         event.x >= threadBounds.x &&
         event.x < threadBounds.x + threadBounds.width &&
@@ -671,6 +774,7 @@ export function createHub(
     },
     dispose() {
       disposed = true;
+      help = undefined;
       interactionTarget = undefined;
       unsubscribe();
       streaming.clear();

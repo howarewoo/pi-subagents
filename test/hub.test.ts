@@ -15,6 +15,7 @@ import {
   getKeybindings,
   setKeybindings,
   KeybindingsManager,
+  TUI_KEYBINDINGS,
 } from "@earendil-works/pi-tui";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
@@ -91,7 +92,8 @@ test("hub frames, pads and paints every cell, adapts to tiny geometry and invali
           );
           if (separators.length) {
             const separatorIndex = rendered.indexOf(separators[0]);
-            assert.equal(separatorIndex, rendered.length - (rows >= 10 ? 5 : 4));
+            // Whole named/configured hints may wrap onto more footer rows.
+            assert.ok(separatorIndex >= 2 && separatorIndex <= rendered.length - 4);
             assert.equal(stripAnsi(separators[0]), "├" + "─".repeat(width - 2) + "┤");
           }
         }
@@ -206,8 +208,8 @@ test("widget removes details on completion while retaining full fleet counts", (
   const widget = createChildWidget(() => children, theme);
   assert.match(widget.render(180).join("\n"), /inspect transition.*\n.*Live preview/);
   children = [{ ...children[0], status: "settled", disposed: true, result: "Final preview" }];
-  assert.deepEqual(widget.render(180), ["● Subagents 1 · 1 settled"]);
-  assert.deepEqual(widget.render(55), ["● Subagents 1 · 0 active · 0 paused · 0 queued"]);
+  assert.deepEqual(widget.render(180), ["● Subagents 1 · 1 settled · /subagent-hub"]);
+  assert.deepEqual(widget.render(55), ["● Subagents 1 · 1 settled · /subagent-hub"]);
 });
 
 test("widget keeps queued and finished fleets summary-only, including undisposed terminal states", () => {
@@ -225,9 +227,12 @@ test("widget keeps queued and finished fleets summary-only, including undisposed
         widget.render(180)[0],
         new RegExp(`${statuses.filter((s) => s === status).length} ${status}`),
       );
-    assert.deepEqual(widget.render(55), [
-      `● Subagents ${children.length} · 0 active · 0 paused · ${statuses[0] === "queued" ? 2 : 0} queued`,
-    ]);
+    assert.match(widget.render(55).join("\n"), /\/subagent-hub/);
+    for (const status of new Set(statuses))
+      assert.match(
+        widget.render(55)[0],
+        new RegExp(`${statuses.filter((s) => s === status).length} ${status}`),
+      );
   }
 });
 
@@ -249,7 +254,7 @@ test("widget overflow counts only non-disposed setup/running/draining tasks", ()
   assert.match(lines[3], /inspect running/);
   assert.equal(lines[4], "└─ 2 more · /subagent-hub");
   assert.doesNotMatch(lines.slice(1).join("\n"), /inspect done|inspect queued|inspect disposed/);
-  assert.match(widget.render(55)[0], /4 active · 0 paused · 1 queued/);
+  assert.match(widget.render(55)[0], /4 active · 1 queued/);
 });
 
 const effectiveKeys = {
@@ -265,7 +270,18 @@ const effectiveKeys = {
         "tui.select.pageDown": "\x1b[6~",
       } as Record<string, string>
     )[action],
-  getKeys: () => ["escape" as const, "enter" as const],
+  getKeys: (action: string) =>
+    (
+      {
+        "tui.select.cancel": ["escape"],
+        "tui.select.confirm": ["enter"],
+        "tui.select.up": ["up"],
+        "tui.select.down": ["down"],
+        "tui.select.pageUp": ["pageUp"],
+        "tui.select.pageDown": ["pageDown"],
+        "app.tools.expand": ["ctrl+o"],
+      } as Record<string, ReturnType<KeybindingsManager["getKeys"]>>
+    )[action] ?? [],
 };
 
 test("historical lease values add no runtime exclusivity claims", (t) => {
@@ -1212,7 +1228,7 @@ for (const action of ["stop", "steer", "message"] as const) {
         begin();
         const visible = render();
         assert.match(visible, /├─+┤/);
-        assert.match(visible, action === "stop" ? /y confirms/ : /Enter submit/);
+        assert.match(visible, action === "stop" ? /y confirms/ : /Enter send/);
         rows--;
         assert.match(render(), /Resize/);
         assert.doesNotMatch(render(), /├─+┤/);
@@ -1812,8 +1828,8 @@ test("paused widget stays summary-only while Hub exposes retained context and st
   });
   const widget = createChildWidget(() => [child], theme);
   const lines = widget.render(140);
-  assert.deepEqual(lines, ["● Subagents 1 · 1 paused"]);
-  assert.match(widget.render(55)[0], /0 active · 1 paused · 0 queued/);
+  assert.deepEqual(lines, ["● Subagents 1 · 1 paused · /subagent-hub"]);
+  assert.match(widget.render(55)[0], /1 paused · \/subagent-hub/);
   const stopped: ChildRef[] = [];
   t.mock.method(coordinator, "list", () => [child]);
   t.mock.method(coordinator, "snapshot", () => child);
@@ -1890,7 +1906,7 @@ test("widget and unfiltered Hub count sessions, not profiles or latest identitie
       children.length,
       ...children.map((child) => ({ ...child, status: "settled" as const, disposed: true })),
     );
-    assert.deepEqual(widget.render(180), ["● Subagents 9 · 9 settled"]);
+    assert.deepEqual(widget.render(180), ["● Subagents 9 · 9 settled · /subagent-hub"]);
   } finally {
     hub.dispose();
   }
@@ -2037,7 +2053,7 @@ test("Hub toggles preserve surviving message/tool reading anchors, safe bounds o
     matches: (data: string, action: string) =>
       action === "app.tools.expand" ? data === "\x0f" : effectiveKeys.matches(data, action),
     getKeys: (action: string) =>
-      action === "app.tools.expand" ? ["ctrl+o" as const] : effectiveKeys.getKeys(),
+      action === "app.tools.expand" ? ["ctrl+o" as const] : effectiveKeys.getKeys(action),
   };
   let rows = 30;
   const hub = createHub(
@@ -2249,4 +2265,623 @@ test("Hub does not hide a custom tool renderer's asynchronous redraw behind fina
   } finally {
     hub.dispose();
   }
+});
+
+// Real configured bindings: TUI defaults plus the app-level expansion action.
+const hubBindings = (user: ConstructorParameters<typeof KeybindingsManager>[1] = {}) =>
+  new KeybindingsManager(
+    {
+      ...TUI_KEYBINDINGS,
+      "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tools" },
+    },
+    user,
+  );
+const flat = (lines: string[]) =>
+  lines
+    .map((line) => stripAnsi(line).replaceAll("│", " "))
+    .join(" ")
+    .replace(/\s+/g, " ");
+const footerRows = (lines: string[]) => {
+  const plain = lines.map(stripAnsi);
+  return plain.slice(plain.findIndex((line) => line.startsWith("├")) + 1, -1);
+};
+
+for (const [name, user, close, closing, inert] of [
+  ["default", {}, "escape/ctrl+c/enter", ["\x1b", "\x03", "\r"], []],
+  [
+    "remapped",
+    { "tui.select.cancel": "ctrl+q", "tui.select.confirm": "ctrl+w" },
+    "ctrl+q/ctrl+w",
+    ["\x11", "\x17"],
+    ["\x1b", "\r", "\x03"],
+  ],
+] as const) {
+  test(`Hub compact/wide hints name every action, the next view and all ${name} close bindings`, (t) => {
+    const coordinator = new DelegationCoordinator("unused", "root");
+    t.mock.method(coordinator, "list", () => [snapshot("one"), snapshot("two", { generation: 2 })]);
+    t.mock.method(coordinator, "messages", () => []);
+    const sent: string[] = [];
+    for (const method of ["stop", "steer", "message", "coordinateWait", "park"] as const)
+      t.mock.method(coordinator, method, async () => {
+        sent.push(method);
+      });
+    let closed = 0,
+      rows = 21;
+    const open = () =>
+      createHub(
+        coordinator,
+        theme,
+        hubBindings(user),
+        () => {},
+        () => closed++,
+        dependencies,
+        () => rows,
+      );
+    const hub = open();
+    try {
+      // Physical 80×24 → 72×21 overlay, stress 60×16 → 54×14, wide 100×30 → 90×27.
+      for (const [width, height] of [
+        [72, 21],
+        [54, 14],
+        [90, 27],
+      ]) {
+        rows = height;
+        for (const next of ["Details", "Tools", "Thread"]) {
+          const lines = hub.render(width);
+          assert.ok(lines.length <= height);
+          assert.ok(lines.every((line) => visibleWidth(line) === width));
+          const footer = footerRows(lines);
+          for (const hint of [
+            "s Steer",
+            "m Inbox",
+            "x Stop",
+            "/ Filter",
+            `Tab ${next}`,
+            "? Help",
+            `${close}: close`,
+          ])
+            assert.ok(
+              footer.some((line) => line.includes(hint)),
+              `${width}×${height}: ${hint}`,
+            );
+          if (width >= 76)
+            for (const hint of ["w Wait", "p Park"])
+              assert.ok(footer.some((line) => line.includes(hint)));
+          hub.handleInput!("\t");
+        }
+      }
+      for (const key of inert) hub.handleInput!(key);
+      assert.equal(closed, 0, "unconfigured keys never close");
+      for (const key of closing) hub.handleInput!(key);
+      assert.equal(closed, closing.length, "every advertised binding closes from browse");
+      assert.deepEqual(sent, [], "hints, tabs, resize and closing send no action");
+    } finally {
+      hub.dispose();
+    }
+  });
+}
+
+test("Hub ? help is modal and observation-only, then restores selection, view and READING anchor", async (t) => {
+  const coordinator = new DelegationCoordinator("unused", "root");
+  t.mock.method(coordinator, "list", () => [
+    snapshot("alpha"),
+    snapshot("beta", { generation: 3 }),
+  ]);
+  t.mock.method(coordinator, "snapshot", (ref: ChildRef) => snapshot(ref.id, ref));
+  t.mock.method(coordinator, "messages", (ref: ChildRef) => [
+    {
+      role: "user",
+      timestamp: 1,
+      content: Array.from({ length: 80 }, (_, i) => `${ref.id} LINE ${i}`).join("\n"),
+    },
+  ]);
+  const sent: unknown[] = [];
+  for (const method of ["stop", "steer", "message", "coordinateWait", "park"] as const)
+    t.mock.method(coordinator, method, async (...args: unknown[]) => {
+      sent.push([method, ...args]);
+      return "queued";
+    });
+  let closed = 0,
+    rows = 27,
+    width = 90;
+  const hub = createHub(
+    coordinator,
+    theme,
+    hubBindings(),
+    () => {},
+    () => closed++,
+    dependencies,
+    () => rows,
+  );
+  const render = () => {
+    const lines = hub.render(width);
+    assert.ok(lines.length <= rows);
+    assert.ok(lines.every((line) => visibleWidth(line) === width));
+    return lines.map(stripAnsi);
+  };
+  try {
+    render();
+    hub.handleInput!("\x1b[B");
+    render();
+    for (let i = 0; i < 5; i++) hub.handleInput!("k");
+    const before = render();
+    assert.match(before.join("\n"), /READING/);
+    assert.match(before.join("\n"), /> [├└] ● inspect beta/);
+    hub.handleInput!("?");
+    const shown = render().join("\n");
+    assert.match(shown, /Subagent Hub · Help/);
+    assert.match(shown, /observation only/);
+    assert.match(shown, /x, then y +Stop subtree; reported after drain/);
+    assert.match(shown, /escape\/ctrl\+c\/enter +Close the Hub; tasks keep running/);
+    assert.match(shown, /ctrl\+o +Toggle all tool output/);
+    assert.match(shown, /\? or escape\/ctrl\+c: back to Hub/);
+    assert.doesNotMatch(shown, /beta LINE/, "help replaces the thread instead of layering on it");
+    for (const key of ["s", "m", "x", "y", "\r", "\t", "/", "w", "p", "f", "r", "\x0f", " "])
+      hub.handleInput!(key);
+    for (const key of ["\x1b[A", "\x1b[B", "j", "k", "\x1b[5~", "\x1b[6~", "\x1b[H", "\x1b[F"])
+      hub.handleInput!(key);
+    assert.equal(
+      hub.handleMouse?.({
+        type: "wheel",
+        button: "none",
+        x: 50,
+        y: 5,
+        screenX: 50,
+        screenY: 5,
+        width: 90,
+        height: 27,
+        shift: false,
+        alt: false,
+        ctrl: false,
+        wheelDelta: -3,
+      })?.handled,
+      true,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, [], "help blocks every underlying control");
+    assert.equal(closed, 0, "Enter inside help never closes the Hub");
+    for ([width, rows] of [
+      [54, 14],
+      [20, 4],
+      [72, 21],
+    ]) {
+      const small = render().join("\n");
+      if (rows === 14) assert.match(small, /back to Hub · j\/k scroll/);
+    }
+    [width, rows] = [90, 27];
+    assert.match(render().join("\n"), /Help/);
+    hub.handleInput!("?");
+    assert.deepEqual(render(), before, "explicit ? return restores the original frame");
+    hub.handleInput!("?");
+    hub.handleInput!("\x1b");
+    assert.deepEqual(render(), before, "cancel returns from help instead of closing");
+    assert.equal(closed, 0);
+    for (const view of ["DETAILS", "TOOLS"]) {
+      hub.handleInput!("\t");
+      const previous = render();
+      assert.match(previous.join("\n"), new RegExp(view));
+      hub.handleInput!("?");
+      render();
+      hub.handleInput!("\x1b");
+      assert.deepEqual(render(), previous, `${view} returns without changing scroll/view`);
+    }
+    hub.handleInput!("\x1b");
+    assert.equal(closed, 1, "browse Escape still closes");
+  } finally {
+    hub.dispose();
+  }
+});
+
+test("Hub text inputs keep ?, j, k and Space printable; stop confirmation ignores help", async (t) => {
+  const coordinator = new DelegationCoordinator("unused", "root");
+  t.mock.method(coordinator, "list", () => [snapshot("alpha")]);
+  t.mock.method(coordinator, "snapshot", () => snapshot("alpha"));
+  t.mock.method(coordinator, "messages", () => []);
+  const sent: unknown[] = [];
+  t.mock.method(coordinator, "steer", async (ref: ChildRef, text: string) => {
+    sent.push(["steer", ref.id, text]);
+    return "queued";
+  });
+  t.mock.method(coordinator, "stop", async (ref: ChildRef) => {
+    sent.push(["stop", ref.id]);
+  });
+  t.mock.method(
+    coordinator,
+    "message",
+    async (_actor: ChildRef | undefined, ref: ChildRef | undefined, text: string) => {
+      sent.push(["message", ref!.id, text]);
+      return { id: "receipt", status: "queued" };
+    },
+  );
+  const hub = createHub(
+    coordinator,
+    theme,
+    hubBindings(),
+    () => {},
+    () => {},
+    dependencies,
+    () => 21,
+  );
+  const output = () => flat(hub.render(72));
+  try {
+    output();
+    hub.handleInput!("s");
+    for (const key of ["?", " ", "j", " ", "k"]) hub.handleInput!(key);
+    assert.match(output(), /Steer: > \? j k/);
+    assert.doesNotMatch(output(), /Help/);
+    hub.handleInput!("\r");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, [["steer", "alpha", "? j k"]]);
+    hub.handleInput!("m");
+    for (const key of ["?", " ", "j", " ", "k"]) hub.handleInput!(key);
+    assert.match(output(), /Inbox: > \? j k/);
+    hub.handleInput!("\r");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.at(-1), ["message", "alpha", "? j k"]);
+    hub.handleInput!("/");
+    for (const key of ["?", "j", " ", "k"]) hub.handleInput!(key);
+    assert.match(output(), /Filter: > \?j k/);
+    hub.handleInput!("\x1b");
+    hub.handleInput!("x");
+    hub.handleInput!("?");
+    assert.match(output(), /Stop target\? y confirms/, "? cannot hide a pinned stop prompt");
+    hub.handleInput!("y");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent.at(-1), ["stop", "alpha"]);
+  } finally {
+    hub.dispose();
+  }
+});
+
+const delayed = {
+  stop: { key: "x", submit: "y", label: "Stop", pending: "stopping and draining…" },
+  steer: { key: "s", submit: "\r", label: "Steer", pending: "sending…" },
+  message: { key: "m", submit: "\r", label: "Inbox", pending: "sending…" },
+  wait: {
+    key: "w",
+    submit: "",
+    label: "Wait",
+    pending: "waiting up to 1000ms (not model acknowledgment)…",
+  },
+} as const;
+for (const action of ["stop", "steer", "message", "wait"] as const)
+  for (const outcome of ["success", "error"] as const)
+    for (const [width, height] of [
+      [72, 21],
+      [54, 12],
+    ])
+      test(`Hub delayed ${action} ${outcome} at ${width}×${height} stays attributed to A while browsing B, filtering and a new generation`, async (t) => {
+        const coordinator = new DelegationCoordinator("unused", "root");
+        const changed = registryChanges(t, coordinator);
+        const a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        const children = [
+          snapshot(a, { assignment: "alpha audit", generation: 7 }),
+          snapshot(b, { assignment: "beta audit", generation: 9 }),
+        ];
+        t.mock.method(coordinator, "list", () => structuredClone(children));
+        t.mock.method(coordinator, "messages", () => []);
+        t.mock.method(coordinator, "snapshot", (ref: ChildRef) =>
+          structuredClone(
+            children.find((child) => child.id === ref.id && child.generation === ref.generation),
+          ),
+        );
+        let settle!: () => void, fail!: (error: Error) => void;
+        const finished = new Promise<void>((resolve, reject) => {
+          settle = resolve;
+          fail = reject;
+        });
+        const dispatched: ChildRef[] = [];
+        const respond =
+          <T>(value: T) =>
+          async (...args: unknown[]) => {
+            const ref = args.find(
+              (arg): arg is ChildRef => typeof arg === "object" && arg !== null && "id" in arg,
+            )!;
+            dispatched.push({ id: ref.id, generation: ref.generation });
+            await finished;
+            return value;
+          };
+        t.mock.method(coordinator, "stop", respond(undefined));
+        t.mock.method(coordinator, "steer", respond("queued"));
+        t.mock.method(coordinator, "message", respond({ id: "receipt-1", status: "queued" }));
+        t.mock.method(coordinator, "coordinateWait", respond({ status: "timeout" }));
+        let renders = 0;
+        const hub = createHub(
+          coordinator,
+          theme,
+          hubBindings(),
+          () => renders++,
+          () => {},
+          dependencies,
+          () => height,
+        );
+        const output = () => {
+          const lines = hub.render(width);
+          assert.ok(lines.length <= height);
+          assert.ok(lines.every((line) => visibleWidth(line) <= width));
+          return flat(lines);
+        };
+        const { key, submit, label, pending } = delayed[action];
+        const who = `${a} #7 · alpha audit · scout`;
+        try {
+          output();
+          hub.handleInput!(key);
+          if (action === "steer" || action === "message") hub.handleInput!("check shutdown");
+          if (submit) {
+            output();
+            hub.handleInput!(submit);
+          }
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.ok(output().includes(`${label} ${who}: ${pending}`), "pending names A");
+          hub.handleInput!("\x1b[B");
+          assert.ok(
+            output().includes(`${label} ${who}: ${pending}`),
+            "optional browse hints yield to the complete original-target notice",
+          );
+          hub.handleInput!("/");
+          hub.handleInput!("beta");
+          hub.handleInput!("\r");
+          children[0] = { ...children[0], generation: 8 };
+          changed(children[0]);
+          assert.match(output(), /beta audit · scout/);
+          assert.ok(
+            output().includes(`${label} ${who}: ${pending}`),
+            "pending retains A while browsing B",
+          );
+          assert.doesNotMatch(output(), /stopped and drained/, "stop success waits for drain");
+          hub.handleInput!("?");
+          assert.ok(
+            output().includes(`${label} ${who}: ${pending}`),
+            "help retains the whole notice",
+          );
+          hub.handleInput!("?");
+          if (outcome === "success") settle();
+          else fail(new Error("provider refused"));
+          await new Promise((resolve) => setImmediate(resolve));
+          await new Promise((resolve) => setImmediate(resolve));
+          const text = output();
+          const expected =
+            outcome === "error"
+              ? `${label} ${who} failed: Error: provider refused`
+              : {
+                  stop: `Stop ${who}: stopped and drained`,
+                  steer: `Steer ${who}: queued · NOT model acknowledgment`,
+                  message: `Inbox ${who}: message receipt-1 · queued · NOT model acknowledgment`,
+                  wait: `Wait ${who}: {"status":"timeout"}`,
+                }[action];
+          assert.ok(text.includes(expected), `${expected}\n${text}`);
+          assert.ok(!text.includes(`${b} #9`) && !text.includes(`${a} #8`), "never retargets");
+          assert.deepEqual(dispatched, [{ id: a, generation: 7 }]);
+          hub.dispose();
+          const after = renders;
+          children[1] = { ...children[1], status: "settled" };
+          changed(children[1]);
+          assert.equal(renders, after, "disposed Hub ignores later events");
+        } finally {
+          hub.dispose();
+        }
+      });
+
+test("Hub park notices retain exact target identity and label", (t) => {
+  const coordinator = new DelegationCoordinator("unused", "root");
+  const a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  t.mock.method(coordinator, "list", () => [
+    snapshot(a, { assignment: "alpha audit", generation: 7, status: "settled", disposed: true }),
+  ]);
+  t.mock.method(coordinator, "messages", () => []);
+  let refuse = false;
+  t.mock.method(coordinator, "park", () => {
+    if (refuse) throw new Error("not idle");
+  });
+  const hub = createHub(
+    coordinator,
+    theme,
+    hubBindings(),
+    () => {},
+    () => {},
+    dependencies,
+    () => 21,
+  );
+  try {
+    hub.render(72);
+    hub.handleInput!("p");
+    assert.ok(flat(hub.render(72)).includes(`Park ${a} #7 · alpha audit · scout: parked`));
+    refuse = true;
+    hub.handleInput!("p");
+    assert.ok(
+      flat(hub.render(72)).includes(`Park ${a} #7 · alpha audit · scout failed: Error: not idle`),
+    );
+  } finally {
+    hub.dispose();
+  }
+});
+
+test("compact widget keeps failure explicit, distinguishes outcomes without color and discloses /subagent-hub within budget", () => {
+  const fleets: Record<string, ChildSnapshot["status"][]> = {
+    failed: ["failed"],
+    settled: ["settled"],
+    cancelled: ["cancelled"],
+    mixed: ["settled", "failed", "cancelled", "settled"],
+    queued: ["queued", "queued"],
+    paused: ["paused"],
+  };
+  const frames = new Map<string, string>();
+  for (const [name, statuses] of Object.entries(fleets)) {
+    const children = statuses.map((status, index) =>
+      snapshot(`${name}-${index}`, {
+        status,
+        disposed: ["settled", "failed", "cancelled"].includes(status),
+      }),
+    );
+    for (const width of [0, 8, 20, 40, 55, 60, 80, 180])
+      for (const rows of [4, 8, 24, 30]) {
+        const lines = createChildWidget(
+          () => children,
+          theme,
+          () => rows,
+        ).render(width);
+        assert.ok(lines.length <= Math.max(1, Math.min(5, Math.floor(rows / 4))));
+        assert.ok(lines.every((line) => visibleWidth(line) <= width));
+        const text = lines.map(stripAnsi).join("\n");
+        if (width >= 20) assert.match(text, new RegExp(`^● Subagents ${children.length}`));
+        if (width >= 55) assert.match(text, /\/subagent-hub/, `${name} ${width}`);
+        if (width >= 40) {
+          const failed = statuses.filter((status) => status === "failed").length;
+          if (failed)
+            assert.match(text, new RegExp(`${failed} failed`), `${name} ${width}×${rows}`);
+          else assert.doesNotMatch(text, /failed/);
+        }
+        if (width === 55 && rows === 24) frames.set(name, text);
+      }
+  }
+  assert.equal(new Set(frames.values()).size, frames.size, "each outcome renders distinct text");
+  // Representative monochrome frames at 55 columns.
+  assert.deepEqual(Object.fromEntries(frames), {
+    failed: "● Subagents 1 · 1 failed · /subagent-hub",
+    settled: "● Subagents 1 · 1 settled · /subagent-hub",
+    cancelled: "● Subagents 1 · 1 cancelled · /subagent-hub",
+    mixed: "● Subagents 4 · 2 settled · 1 failed · 1 cancelled\n└─ /subagent-hub for details",
+    queued: "● Subagents 2 · 2 queued · /subagent-hub",
+    paused: "● Subagents 1 · 1 paused · /subagent-hub",
+  });
+});
+
+test("Hub remapped input/cancel hints and unbound expansion/help have no default-key fallback", async (t) => {
+  const coordinator = new DelegationCoordinator("unused", "root");
+  const child = snapshot("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", { assignment: "alpha" });
+  t.mock.method(coordinator, "list", () => [child]);
+  t.mock.method(coordinator, "snapshot", () => structuredClone(child));
+  t.mock.method(coordinator, "messages", () => []);
+  const sent: string[] = [];
+  t.mock.method(coordinator, "steer", async (_target: ChildRef, text: string) => {
+    sent.push(text);
+    return "queued";
+  });
+  let rows = 21,
+    closed = 0;
+  const hub = createHub(
+    coordinator,
+    theme,
+    hubBindings({
+      "tui.select.cancel": ["ctrl+q", "ctrl+z"],
+      "tui.select.confirm": ["ctrl+w", "ctrl+e"],
+      "app.tools.expand": [],
+    }),
+    () => {},
+    () => closed++,
+    dependencies,
+    () => rows,
+  );
+  const output = () => flat(hub.render(72));
+  try {
+    assert.match(output(), /ctrl\+q\/ctrl\+z\/ctrl\+w\/ctrl\+e: close/);
+    assert.match(output(), /Tools collapsed · unbound: toggle all/);
+    hub.handleInput!("\x0f");
+    assert.match(output(), /Tools collapsed/);
+    hub.handleInput!("?");
+    assert.match(output(), /Help/);
+    for (let i = 0; i < 15; i++) {
+      hub.handleInput!("j");
+      output();
+    }
+    assert.match(output(), /unbound Toggle all tool output/);
+    hub.handleInput!("\x1b");
+    assert.match(output(), /Help/, "unbound default Escape cannot exit help");
+    hub.handleInput!("\x11");
+    hub.handleInput!("s");
+    hub.handleInput!("? j k");
+    assert.match(output(), /ctrl\+w\/ctrl\+e send · ctrl\+q\/ctrl\+z back/);
+    rows = 4;
+    hub.handleInput!("\x17");
+    assert.deepEqual(sent, [], "hidden controls refuse remapped confirmation before redraw");
+    assert.match(output(), /Resize/);
+    hub.handleInput!("\x17");
+    assert.deepEqual(sent, []);
+    rows = 21;
+    assert.match(output(), /Steer: > \? j k/);
+    hub.handleInput!("\x05");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, ["? j k"]);
+    hub.handleInput!("s");
+    output();
+    hub.handleInput!("cancel me");
+    hub.handleInput!("\x1a");
+    assert.doesNotMatch(output(), /Target:/);
+    assert.equal(sent.length, 1);
+    assert.equal(closed, 0, "local configured cancel does not close");
+    hub.handleInput!("\x11");
+    assert.equal(closed, 1);
+  } finally {
+    hub.dispose();
+  }
+});
+
+for (const outcome of ["success", "error"] as const)
+  test(`Hub disposed pending stop ${outcome} never redraws or changes the next opening`, async (t) => {
+    const coordinator = new DelegationCoordinator("unused", "root");
+    const child = snapshot("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", { assignment: "alpha" });
+    t.mock.method(coordinator, "list", () => [child]);
+    t.mock.method(coordinator, "snapshot", () => structuredClone(child));
+    t.mock.method(coordinator, "messages", () => []);
+    let settle!: () => void, fail!: (error: Error) => void;
+    const drained = new Promise<void>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    let calls = 0;
+    t.mock.method(coordinator, "stop", async () => {
+      calls++;
+      await drained;
+    });
+    let renders = 0;
+    const open = () =>
+      createHub(
+        coordinator,
+        theme,
+        hubBindings(),
+        () => renders++,
+        () => {},
+        dependencies,
+        () => 21,
+      );
+    const old = open();
+    old.render(72);
+    old.handleInput!("x");
+    old.render(72);
+    old.handleInput!("y");
+    old.dispose();
+    const fresh = open();
+    try {
+      const before = fresh.render(72).map(stripAnsi);
+      const count = renders;
+      if (outcome === "success") settle();
+      else fail(new Error("late failure"));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(renders, count);
+      assert.deepEqual(fresh.render(72).map(stripAnsi), before);
+      assert.equal(calls, 1, "disposing UI never sends another stop");
+    } finally {
+      fresh.dispose();
+    }
+  });
+
+test("single-row compact widget prioritizes failed text and Hub discovery even in a mixed live fleet", () => {
+  const children = [
+    snapshot("running"),
+    snapshot("failed", { status: "failed", disposed: true }),
+    snapshot("queued", { status: "queued" }),
+    snapshot("settled", { status: "settled", disposed: true }),
+  ];
+  const output = createChildWidget(
+    () => children,
+    theme,
+    () => 4,
+  ).render(55);
+  assert.equal(output.length, 1);
+  assert.ok(visibleWidth(output[0]) <= 55);
+  assert.match(output[0], /Subagents 4/);
+  assert.match(output[0], /1 failed/);
+  assert.match(output[0], /1 active/);
+  assert.match(output[0], /\/subagent-hub/);
 });

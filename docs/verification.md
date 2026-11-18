@@ -1,3 +1,55 @@
+# Combined acceptance follow-up
+
+The verification-only local A/B/C reconciliation passed `npm run check`: lint, format,
+strict types, **503/503 tests**, no failures/skips/cancellations, and SDK exercise PASS.
+C's Hub/widget production source is unchanged from its independently verified branch.
+Native combined profile checks subsequently confirmed baseline draft/footer/caret,
+Space and exact-grant effects, safe resize, and real external-conflict Keep/Discard /
+Reload behavior. Native light selection was independently confirmed in settings; no
+pixel-contrast, screenshot, screen-reader or paid-provider certification is claimed.
+C and combined CLI hosts exited normally with runtime exit 0 and owned-tab cleanup,
+without PTY kill. The prior pending-combined checkpoint below is superseded, not rewritten.
+
+All three PRs remain independent against `main`; prefer A then B for shared profile
+source. Resolve overlapping docs by retaining each new entry and historical bytes.
+No production code changed after the successful aggregate checks. CI/review monitoring,
+merge and readiness changes remain outside this delivery.
+
+# Hub and widget usability verification
+
+Independent `fix/tui-supervision`, based on `main` at
+`f8835d2ebaa1601abd9939f0867fb6ead95b3c0e`. Historical records below are preserved.
+
+- Focused Hub/widget/thread/real-SDK observability checks: **70 passed**. An initial
+  aggregate run exposed three stale presentation assertions; those existing consumer
+  assertions were repaired without weakening original-target, held-capacity, drain or
+  no-message-retarget safeguards.
+- Final `npm run check`: lint, formatting and strict typecheck pass; **488 tests passed**,
+  no failures/skips/cancellations; controlled SDK exercise prints PASS.
+- Actual offline Pi 1.5.2 CLI, isolated synthetic HOME/agent/cwd/sessions, explicit
+  extension and unchanged controlled-fleet fixture, no ambient extensions/MCP/skills/
+  context or credentials: measured physical **80×24 → 72×21** Hub shows named actions
+  and configured close bindings. Modal help returned to the same selected Reader alpha
+  and READING 596–607 anchor after a **60×16 → 54×14** resize/restore. Enter closed the
+  browse Hub. A settled Wait notice retained alpha's full UUID/generation and sanitized
+  label while browsing Reader beta. Actual **55×24** widget text distinguished three
+  settled and one failed task and retained `/subagent-hub` discovery without color.
+- Selected light through the existing fixture command; a separate native settings
+  search independently displayed `Theme light`. Actual **100×30 → 90×27** Hub fit named
+  controls. Existing real-SDK theme coverage passes native dark/light and tinted custom
+  palettes. Native snapshots are text/geometry evidence, not pixel-contrast or screen
+  reader certification. Orca may resize its PTY, so only remeasured captures support the
+  stated dimensions.
+- CLI exited normally via Ctrl+D with runtime exit 0; only the owned tab was closed,
+  without killing its PTY. The fleet's writer used only its synthetic temporary files.
+
+Pending/success/error/refusal qualification, original-generation pinning, held-hook Stop
+capacity/drain and input isolation are covered by component and real-SDK tests; the live
+CLI exercised settled Wait and help/browse, not delayed active Stop or paid providers.
+Final combined profile-flow acceptance is tracked separately and is not inferred from
+this independent branch's green checks. No permission/lifecycle/configuration or
+persistence contract changes, dependency updates or migration are required.
+
 # Combined TUI acceptance follow-up
 
 This follow-up supersedes the pending combined-acceptance checkpoint below; it does

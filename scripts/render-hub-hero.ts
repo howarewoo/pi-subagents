@@ -124,7 +124,10 @@ const palette: Parameters<typeof createHub>[1] = {
     ),
   colors: { customMessageBg: oklchColor(0.337, 0, 0) },
 };
-const keys = new KeybindingsManager(TUI_KEYBINDINGS);
+const keys = new KeybindingsManager({
+  ...TUI_KEYBINDINGS,
+  "app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
+});
 const hub = createHub(
   coordinator,
   palette,
@@ -148,7 +151,27 @@ const widget = createChildWidget(
   () => children.map((child) => ({ ...child, endedAt: 2000 })),
   palette,
 );
-const lines = (widgetMode ? widget : profilesMode ? profiles : hub).render(120);
+const compactWidget = createChildWidget(
+  () =>
+    children.slice(0, 4).map((child, index) => ({
+      ...child,
+      status: index === 3 ? "failed" : "settled",
+      disposed: true,
+      endedAt: 2000,
+    })),
+  palette,
+  () => 4,
+);
+// Show the synthetic audit plan in the expanded tool output.
+hub.handleInput?.("\x0f");
+const lines = widgetMode
+  ? [
+      ...widget.render(120),
+      "",
+      palette.fg("muted", "COMPACT · 55 COLUMNS"),
+      ...compactWidget.render(55),
+    ]
+  : (profilesMode ? profiles : hub).render(120);
 hub.dispose();
 const title = widgetMode
   ? "Pinned Subagents widget"
@@ -156,7 +179,7 @@ const title = widgetMode
     ? "Subagent Profiles"
     : "Subagent Hub";
 const description = widgetMode
-  ? "Production pinned widget at default capacity: 16 running, 32 queued, nesting depth 2. Synthetic data; not a terminal screenshot."
+  ? "Production pinned widget at default capacity: 16 running, 32 queued, nesting depth 2. A separate 55-column example shows three settled tasks, one failure, and the Hub command. Synthetic data; not a terminal screenshot."
   : profilesMode
     ? "Production profile viewer with bundled profiles and no inherited skills. Synthetic offline data; not a terminal screenshot."
     : "Production terminal renderer at default capacity: 16 running, 32 queued, nesting depth 2. Synthetic data; not a terminal screenshot.";

@@ -6,14 +6,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { ChildSnapshot } from "./coordinator.ts";
-import {
-  active,
-  activity,
-  assignmentHeadline,
-  lineText,
-  statuses,
-  taskTree,
-} from "./task-presentation.ts";
+import { activity, assignmentHeadline, lineText, statuses, taskTree } from "./task-presentation.ts";
 
 /** Full session totals with an event-driven, bounded active-agent tree; details remain in the Hub. */
 export function createChildWidget(
@@ -26,7 +19,6 @@ export function createChildWidget(
       width = Math.max(0, width);
       const children = snapshot();
       if (!children.length) return [];
-      const queued = children.filter((child) => child.status === "queued").length;
       const priority = (child: ChildSnapshot) =>
         child.status === "draining" || child.status === "pausing"
           ? 0
@@ -46,18 +38,29 @@ export function createChildWidget(
         )
         .sort((a, b) => priority(a) - priority(b));
       const budget = Math.max(1, Math.min(5, Math.floor(availableRows() / 4)));
-      const counts =
-        width < 60
-          ? `${live.filter(active).length} active · ${children.filter((child) => child.status === "paused").length} paused · ${queued} queued`
-          : statuses
-              .flatMap((status) => {
-                const count = children.filter((child) => child.status === status).length;
-                return count ? [`${count} ${status}`] : [];
-              })
-              .join(" · ");
-      const rows = [
-        theme.fg("accent", `● Subagents ${children.length}`) + theme.fg("muted", ` · ${counts}`),
+      const count = (status: ChildSnapshot["status"]) =>
+        children.filter((child) => child.status === status).length;
+      const title = `● Subagents ${children.length}`;
+      const summary = (parts: string[]) =>
+        theme.fg("accent", title) +
+        parts
+          .map((part) => theme.fg(part.endsWith(" failed") ? "error" : "muted", " · " + part))
+          .join("");
+      const all = statuses.flatMap((status) =>
+        count(status) ? [`${count(status)} ${status}`] : [],
+      );
+      // Compact order keeps failures ahead of low-urgency totals; words, not color, carry outcome.
+      const compact = [
+        `${live.length} active`,
+        ...(["failed", "queued", "paused", "cancelled", "settled"] as const).flatMap((status) =>
+          count(status) ? [`${count(status)} ${status}`] : [],
+        ),
       ];
+      const parts =
+        (width < 60 && live.length) || visibleWidth([title, ...all].join(" · ")) > width
+          ? compact
+          : all;
+      const rows = [summary(parts)];
       const room = Math.max(0, budget - 1);
       const activityRows = live.length && room >= (live.length > 1 ? 3 : 2) ? 1 : 0;
       const slots = room - activityRows;
@@ -143,6 +146,22 @@ export function createChildWidget(
       }
       if (shown.length < live.length && room)
         rows.push(theme.fg("muted", `└─ ${live.length - shown.length} more · /subagent-hub`));
+      // Summary-only output still names where details live, inline or in one budgeted row.
+      if (rows.length === 1) {
+        if (visibleWidth(rows[0]) + 16 <= width) rows[0] += theme.fg("muted", " · /subagent-hub");
+        else if (budget > 1) rows.push(theme.fg("muted", "└─ /subagent-hub for details"));
+        else if (width >= 40) {
+          // One-row budgets prioritize failure and discovery over secondary state totals.
+          const prioritized = [...parts].sort(
+            (a, b) => Number(b.endsWith(" failed")) - Number(a.endsWith(" failed")),
+          );
+          const fitting: string[] = [];
+          for (const part of prioritized)
+            if (visibleWidth([title, ...fitting, part].join(" · ")) + 16 <= width)
+              fitting.push(part);
+          rows[0] = summary(fitting) + theme.fg("muted", " · /subagent-hub");
+        }
+      }
       return rows.slice(0, budget).map((line) => truncateToWidth(line, width));
     },
     invalidate() {},
