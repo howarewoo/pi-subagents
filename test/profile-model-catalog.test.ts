@@ -446,3 +446,80 @@ test("metadata adapter keeps accessible out-of-scope entries, rejects nonphysica
     assert.doesNotMatch(JSON.stringify(result), /private host failure/);
   }
 });
+
+test("production 68x14 picker budgets mixed diagnostics before results and retains details/selection", () => {
+  const present = { ...catalog.entries[0], id: "present", efforts: [{ effort: "off" as const }] };
+  const inaccessible = {
+    ...present,
+    id: "missing",
+    efforts: [
+      { effort: "off" as const, reason: "Unavailable metadata/access " + "reason ".repeat(30) },
+    ],
+  };
+  const long = {
+    ...present,
+    id: "exact-" + "x".repeat(140),
+    name: "Eligible 終 " + "name ".repeat(30),
+  };
+  const p = picker(() => ({ entries: [long, present, catalog.entries[1], inaccessible] }), {
+    ...options,
+    context: [
+      "Global · affects other workspaces",
+      "Grant permits explicit overrides too",
+      "Saves route + exact grant atomically",
+    ],
+    excluded: [{ provider: present.provider, id: present.id, effort: "off" }],
+  });
+  p.resize(14);
+  const frame = p.render(68);
+  assert.doesNotMatch(frame, /resize/);
+  for (const label of [
+    "Search:",
+    "Provider:",
+    "Models:",
+    "Eligible",
+    "Effort:",
+    "Select",
+    "Refresh",
+    "F1",
+  ])
+    assert.ok(frame.includes(label), label);
+  p.component.handleInput!("\x1bOP");
+  let details = p.render(68);
+  for (let i = 0; i < 80; i++) {
+    p.component.handleInput!("j");
+    details += p.render(68);
+  }
+  assert.match(details, /already present/);
+  assert.match(details, /session model\/effort scope/);
+  assert.match(details, /Unavailable metadata\/access/);
+  p.component.handleInput!("esc");
+  for (const key of ["down", "enter", "\x1b[C", "enter", "enter"]) {
+    p.component.handleInput!(key);
+    p.render(68);
+  }
+  assert.deepEqual(p.result, { provider: long.provider, id: long.id, effort: "off" });
+});
+
+test("catalog search keeps Space/j/k/? printable and unbound hints do not invent confirmation keys", () => {
+  let finished = false;
+  const p = createProfileModelPicker(
+    () => catalog,
+    options,
+    theme,
+    { ...keys, getKeys: () => [] },
+    () => {},
+    () => {
+      finished = true;
+    },
+    () => 14,
+  );
+  p.render(68);
+  for (const key of ["j", " ", "k", "?"]) p.handleInput!(key);
+  const frame = plain(p.render(68).join("\n"));
+  assert.match(frame, /Search: j k\?/);
+  assert.match(frame, /unbound: results/);
+  assert.match(frame, /unbound back/);
+  assert.doesNotMatch(frame, /Enter|Esc/);
+  assert.equal(finished, false);
+});

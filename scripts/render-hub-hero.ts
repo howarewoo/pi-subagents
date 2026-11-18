@@ -5,7 +5,9 @@ import { stripVTControlCharacters } from "node:util";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import {
+  KeybindingsManager,
   ProcessTerminal,
+  TUI_KEYBINDINGS,
   TuiMainScreen,
   oklchColor,
   parseColor,
@@ -122,10 +124,11 @@ const palette: Parameters<typeof createHub>[1] = {
     ),
   colors: { customMessageBg: oklchColor(0.337, 0, 0) },
 };
+const keys = new KeybindingsManager(TUI_KEYBINDINGS);
 const hub = createHub(
   coordinator,
   palette,
-  { matches: () => false, getKeys: () => ["escape", "enter"] },
+  keys,
   () => {},
   () => {},
   { tui, cwd: process.cwd() },
@@ -134,7 +137,7 @@ const hub = createHub(
 const profiles = createProfileViewer(
   bundledProfiles(),
   palette,
-  { matches: () => false, getKeys: () => ["escape"] },
+  keys,
   () => {},
   () => {},
   () => 23,

@@ -38,6 +38,32 @@ original-generation / capacity/drain cases use component, filesystem and real-SD
 Text/geometry and real dark/light/tinted-theme tests are not pixel-contrast, screenshot,
 screen-reader or paid-provider certification. No CI/review/merge readiness is claimed.
 
+# Profile controls and compact catalog verification
+
+Independent `fix/tui-profile-controls`, based on `main` at
+`f8835d2ebaa1601abd9939f0867fb6ead95b3c0e`. Historical records below are preserved.
+
+- Focused inspector/viewer/catalog/autosave/configuration checks: **124 passed**;
+  regression-first cases reproduced oversized action/value and baseline picker failures.
+- Coordinator `npm run check`: lint, formatting and strict typecheck pass; **478 tests
+  passed**, no failures/skips/cancellations; controlled SDK exercise prints PASS.
+- Component assertions exercise physical **80×24 → 72×21** inspector and **68×14** nested
+  catalog, **100×30 → 90×27** layouts, and **60×16 → 54×14** safe resize/back/restore;
+  all explicit efforts, three hidden-reason categories, long ASCII/CJK exact identities,
+  configured/unbound bindings, printable native-input/search keys and disk-verified
+  once-only Space membership saves.
+- Exact grant revocation remains pinned to provider/ID/effort and leaves unrelated
+  grants intact; routing-required grants remain disabled. Full matching identities and
+  reasons remain scrollable through existing detail content/F1. Current geometry is
+  rerendered before dispatch, so stale visibility cannot activate hidden controls.
+
+These are source/component/SDK observations, not actual PTY, pixel-contrast or screen
+reader certification. Native baseline profile/catalog/grant flows, repaired draft-footer
+comparison and combined A/B acceptance remain coordinator-owned and pending at this
+checkpoint. Independent green checks or draft publication do not complete that gate.
+No configuration, grant validation, lifecycle, persistence, dependency or migration
+changes; native Pi components and existing semantic themes remain in use.
+
 # TUI draft-preservation verification
 
 This record covers the draft-preservation change only; the historical records below remain unchanged.
