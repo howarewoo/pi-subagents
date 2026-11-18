@@ -159,9 +159,9 @@ To enable **nested project-local targets**, explicitly register an exact name an
 
 **Ceilings are not callable tools.** Pi's command context has no callable-tool dispatcher, so the viewer/editor report callable tools as unknown rather than treating active declarations as executable grants. Admission performs the real intersection and remaining checks; inspect a task's `tools` in `/subagent-status` or Hub Details. RPC, JSON and print modes retain the structured `{toolPolicy, profiles}` message instead of opening an overlay. Invalid configuration or missing/invalid granted skills fails resolution, as at admission.
 
-![Native-renderer illustration of Subagent Profiles with a synthetic role list and selected general profile overview.](docs/images/subagent-profiles.svg)
+![Native-renderer illustration of the read-only Subagent Profiles overview, with General selected and separate hints for entering settings, editing and going back.](docs/images/subagent-profiles.svg)
 
-_Synthetic native-component output; not a terminal screenshot or live-provider verification._
+_Synthetic native-component output; not a terminal screenshot or live-provider verification. Regenerate with `node scripts/render-hub-hero.ts --profiles`._
 
 ## Subagent Hub
 
