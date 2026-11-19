@@ -698,15 +698,18 @@ export async function createChildExecution(
             artifacts.error = `Outcome artifact persistence failed: ${String(error)}`;
           }
           const missing = entry.validator && entry.state.outcome?.validation !== "submitted";
+          const status =
+            entry.cancelled || last?.stopReason === "aborted"
+              ? "cancelled"
+              : failed || missing || artifacts.error
+                ? "failed"
+                : "settled";
           owner.update({
             artifacts,
             outcome: entry.state.outcome ? { ...entry.state.outcome, finalized: true } : undefined,
-            status:
-              entry.cancelled || last?.stopReason === "aborted"
-                ? "cancelled"
-                : failed || missing || artifacts.error
-                  ? "failed"
-                  : "settled",
+            status,
+            // A budget wrap-up report is a partial answer, not a completed assignment.
+            ...(status === "settled" && entry.wrapUp ? { partial: true } : {}),
             result,
             error: entry.state.limitReason
               ? entry.state.error

@@ -63,6 +63,7 @@ export default function delegation(pi: ExtensionAPI) {
       id: state.id,
       generation: state.generation,
       status: state.status,
+      ...(state.partial ? { partial: true } : {}),
       transcript: state.transcript,
       artifacts: state.artifacts,
     }));

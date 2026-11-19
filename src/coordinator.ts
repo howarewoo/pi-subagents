@@ -13,7 +13,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
-import { resultValidator } from "./outcomes.ts";
+import { clippedText, resultValidator } from "./outcomes.ts";
 import {
   allowsModel,
   sameSelection,
@@ -72,6 +72,8 @@ type Entry = ExecutionRecord & {
   setup?: Promise<void>;
   resuming?: boolean;
   pauseDrain?: Promise<void>;
+  /** Retained-session message count when the current window began. */
+  windowMessageStart?: number;
   callerId: string;
   fallbackReset?: boolean;
   resettingFallback?: boolean;
@@ -722,8 +724,23 @@ export class DelegationCoordinator {
       ]).then(() => {
         if (entry.cancelled || this.closing || entry.state.disposed) return;
         this.presence.set(entry.state.id, "paused");
+        // Only this window's text: a resumed window must not report the previous window's output.
+        const partialText = entry.session?.messages
+          .slice(entry.windowMessageStart ?? 0)
+          .filter((message) => message.role === "assistant")
+          .map((message) =>
+            message.content
+              .filter((block) => block.type === "text")
+              .map((block) => block.text)
+              .join("")
+              .trim(),
+          )
+          .filter(Boolean)
+          .at(-1);
         this.update(entry, {
           status: "paused",
+          partial: true,
+          partialText: partialText && clippedText(partialText),
           writerLease: false,
           retainedContext: !!entry.session,
           activity: "Paused; explicitly resume to continue retained conversation",
@@ -1071,6 +1088,8 @@ export class DelegationCoordinator {
       entry.budgetNoticeSent = false;
       this.presence.set(entry.state.id, "active");
       entry.pauseDrain = undefined;
+      // Completed windows disposed their session; restoration replays the finalized messages.
+      entry.windowMessageStart = (entry.session?.messages ?? entry.finalizedMessages)?.length ?? 0;
       entry.resumeText =
         !entry.prompted && entry.resumeText ? entry.resumeText + "\n\n" + text : text;
       entry.run = undefined;
@@ -1078,6 +1097,8 @@ export class DelegationCoordinator {
       this.update(entry, {
         status: "queued",
         pauseReason: undefined,
+        partial: undefined,
+        partialText: undefined,
         error: undefined,
         limits,
         window: (entry.state.window ?? 1) + 1,
