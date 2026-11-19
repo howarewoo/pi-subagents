@@ -100,6 +100,43 @@ test("paused windows carry partial plus a bounded last-text preview; resume clea
   assert.doesNotMatch(taskCard(final, true).join("\n"), /Partial/);
 });
 
+test("a resumed window paused before new text does not report the previous window's text", async (t) => {
+  let release!: () => void;
+  let entered = false;
+  const f = await fixture(t, {
+    speed: 0,
+    extra: (pi) => {
+      pi.on("tool_call", async (event) => {
+        if (event.toolName === "read") {
+          entered = true;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+      });
+    },
+    response: (context) =>
+      userText(context) === "stall"
+        ? fauxAssistantMessage(fauxToolCall("read", { path: "input.txt" }), {
+            stopReason: "toolUse",
+          })
+        : fauxAssistantMessage("old final answer"),
+  });
+  await writeFile(join(f.root, "input.txt"), "data");
+  const ref = await f.direct("original", "general", { limits: { deadlineMs: 500 } });
+  assert.equal((await f.coordinator.wait(ref)).result, "old final answer");
+  await f.coordinator.resume(ref, "stall");
+  const waiter = f.coordinator.wait(ref);
+  await eventually(() => entered);
+  await eventually(() => f.coordinator.snapshot(ref)!.status === "pausing");
+  release();
+  const paused = await waiter;
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.partial, true);
+  assert.equal(paused.partialText, undefined, "previous window's answer is not this window's text");
+  assert.match(taskCard(paused).join("\n"), /last text: none yet/);
+});
+
 test("wrap-up-settled windows are partial; ordinary settles are not", async (t) => {
   const f = await fixture(t, {
     speed: 0,
