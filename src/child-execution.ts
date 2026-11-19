@@ -73,13 +73,14 @@ export interface ExecutionOwner {
   dispose(): void;
 }
 
-/** Window-relative: a summary request may not leave fewer than the largest report reserve. */
+/** Window-relative: `requests` summary requests may not leave fewer than the largest report reserve. */
 export function compactionWouldSpendReserve(
   entry: Pick<ExecutionRecord, "state" | "wrapUp">,
+  requests = 1,
 ): boolean {
   const { limits, telemetry, windowStart } = entry.state;
   const used = (telemetry.requests ?? 0) - (windowStart?.requests ?? 0);
-  return !!entry.wrapUp || limits.requests - used <= 2;
+  return !!entry.wrapUp || limits.requests - used - requests < 2;
 }
 
 export function childResources(prompt: string, skills: Skill[] = []): ResourceLoader {
@@ -258,6 +259,14 @@ export async function createChildExecution(
                   { role: "system", content: guidance, timestamp: Date.now() },
                 ],
               };
+          });
+          // Decide up front so a split-turn compaction (history + turn-prefix summaries) is
+          // refused before it charges a request; the per-request check stays as a backstop.
+          pi.on("session_before_compact", ({ preparation }) => {
+            const { isSplitTurn, messagesToSummarize, turnPrefixMessages } = preparation;
+            const split = isSplitTurn && turnPrefixMessages.length > 0;
+            const requests = split && messagesToSummarize.length > 0 ? 2 : 1;
+            if (compactionWouldSpendReserve(entry, requests)) return { cancel: true };
           });
           pi.on("tool_call", (event, ctx) => {
             if (entry.wrapUp && entry.validator && event.toolName !== "submit_result") {

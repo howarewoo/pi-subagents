@@ -183,6 +183,15 @@ test("F4: the compaction reserve guard is relative to the current budget window"
     compactionWouldSpendReserve({ state: state(13, { requests: 5, toolCalls: 0 }) }),
     true,
   );
+  // A split-turn compaction needs two summaries: 3 left in the window is not enough.
+  assert.equal(
+    compactionWouldSpendReserve({ state: state(12, { requests: 5, toolCalls: 0 }) }, 2),
+    true,
+  );
+  assert.equal(
+    compactionWouldSpendReserve({ state: state(11, { requests: 5, toolCalls: 0 }) }, 2),
+    false,
+  );
   assert.equal(
     compactionWouldSpendReserve({
       state: state(9, { requests: 5, toolCalls: 0 }),
