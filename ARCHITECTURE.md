@@ -68,7 +68,7 @@ Three model-facing tools share that coordinator:
 - **`delegate_coordinate`** provides live messaging, bounded waits, status, stop, park, and fresh-generation follow-up or revival. Child access is separately granted and restricted.
 - **`subagent`** is a compatibility adapter, not a second executor. It maps `worker` to `implementation`, normalizes requests into the existing delegation path, and exposes identities as `UUID@generation`. Launches are asynchronous by default and wake the parent after drain.
 
-Commands `/subagent-profiles` (Subagent Profiles), `/subagent-status`, `/subagent-stop`, `/subagent-steer`, and `/subagent-hub` expose profile information and the same registry to the operator. The former `/task-*` commands and `/agent-hub` are not registered as aliases. Follow-up and revival are model-tool operations, not direct Hub actions.
+Commands `/subagent-profiles` (Subagent Profiles), `/subagent-stop`, and `/subagent-hub` expose profile information and the same registry to the operator. Outside the TUI, `/subagent-hub` prints the registry list. Steering uses the Hub's thread-column composer; per-identity status and fallback reset are orchestrator tool actions. The former `/task-*`, `/agent-hub`, `/subagent-status`, `/subagent-steer` and `/subagent-fallback-reset` commands are not registered as aliases. Follow-up and revival are model-tool operations, not direct Hub actions.
 
 On `session_shutdown`, the extension closes admission, removes the widget, aborts and drains children, and unsubscribes observers. SDK embedders must emit the public shutdown lifecycle: disposing the parent session alone is not the cleanup contract.
 
@@ -164,7 +164,7 @@ covers boundary backoff because Pi's low-level turn signal is absent there; coor
 pause/stop/disposal abort it before drain. Actual dispatch callbacks charge cumulative budgets.
 
 Retained sessions preserve route, failure count, physical attempt/skip evidence and budgets.
-An exhausted chain never wraps; an idle root-operator reset revalidates and resets routing only,
+An exhausted chain never wraps; an idle root-only `delegate_coordinate` `reset_fallback` revalidates and resets routing only,
 without inference or renewed budgets/deadline. A reset failed window can explicitly resume;
 its prior failed outcome remains evidence. Changed chain identity requires explicit reset.
 State is retained only for the owning parent lifetime. No main-thread fallback package,

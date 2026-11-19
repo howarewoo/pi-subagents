@@ -100,16 +100,17 @@ Drain active tasks, install `npm:@howarewoo/pi-subagents@0.4.0`, then restart Pi
 configuration and the stable Pi 1.5.2 minimum/tested host are unchanged. Updating a checkout
 does not repair an already loaded runtime. See the [delegation contract](docs/delegation-contract.md).
 
-Use the returned task ID and generation for controls:
+The extension adds three commands:
 
 ```text
-/subagent-profiles
-/subagent-status
-/subagent-status <id> <generation>
-/subagent-steer <id> <generation> <text>
-/subagent-stop <id> <generation>
-/subagent-hub
+/subagent-hub                     # watch, steer and control subagents
+/subagent-profiles                # inspect or edit profiles
+/subagent-stop <id> <generation>  # stop and drain one task
 ```
+
+Open `/subagent-hub` to check status or steer a running task from its composer. Outside the TUI (RPC, JSON or print mode), `/subagent-hub` prints the current task list instead. For anything else, such as per-task status or a fallback reset, ask the orchestrator; it controls tasks with the `subagent` and `delegate_coordinate` tools.
+
+**Removed commands:** `/subagent-status`, `/subagent-steer` and `/subagent-fallback-reset` no longer exist and have no aliases. Use Subagent Hub (or the non-TUI `/subagent-hub` list) for status, the Hub composer for steering, and ask the orchestrator to call `delegate_coordinate` `reset_fallback` for fallback resets.
 
 ## Native orchestration
 
@@ -126,7 +127,7 @@ Pi discovers the native `subagent` tool at startup through its tool description 
 - `worker` maps to the configured `implementation` profile; `scout`, `review` and `general` are also available.
 - Calls are async by default and wake the parent after drain. Set `async:false` to wait; use `tasks:[{agent,task,cwd?}]` for a batch.
 - Control a task with its returned `id` and `action:"status"`, `"steer"`, `"stop"` or `"resume"`. Steer/resume also require `message`.
-- Resume continues a drained paused **or completed** conversation, preserving the same identity, generation, session count and full SDK conversation/tool history. Completed idle/parked agents restore their canonical session into a new SDK runtime using the same transcript, not a result summary. Missing restoration state, stopped identities, failed identities without an operator fallback reset, and retired descendants reject; there is no fresh-context fallback. Explicit `delegate_coordinate` followup/revive still start fresh work.
+- Resume continues a drained paused **or completed** conversation, preserving the same identity, generation, session count and full SDK conversation/tool history. Completed idle/parked agents restore their canonical session into a new SDK runtime using the same transcript, not a result summary. Missing restoration state, stopped identities, failed identities without a fallback reset, and retired descendants reject; there is no fresh-context fallback. Explicit `delegate_coordinate` followup/revive still start fresh work.
 
 The coordinator supplies an existing workspace and the complete handoff, including accessible skill/reference paths. The extension does not create or manage worktrees. This is the [supported orchestration interface](docs/delegation-contract.md#native-orchestration-compatibility), not compatibility with every competing workflow script or ambient Markdown agent definition.
 
@@ -157,7 +158,7 @@ To enable **nested project-local targets**, explicitly register an exact name an
 
 **Registration scope is every trusted project using these operator settings**, not only the current workspace. Each trusted project may supply independent instructions for the registered name under its ceiling. Registration is neither a parent spawn grant nor authorization for every role under a ceiling. Root local launches do not require incoming registration. See the [exact paired configuration](docs/delegation-contract.md#custom-definitions-and-project-role-ceilings).
 
-**Ceilings are not callable tools.** Pi's command context has no callable-tool dispatcher, so the viewer/editor report callable tools as unknown rather than treating active declarations as executable grants. Admission performs the real intersection and remaining checks; inspect a task's `tools` in `/subagent-status` or Hub Details. RPC, JSON and print modes retain the structured `{toolPolicy, profiles}` message instead of opening an overlay. Invalid configuration or missing/invalid granted skills fails resolution, as at admission.
+**Ceilings are not callable tools.** Pi's command context has no callable-tool dispatcher, so the viewer/editor report callable tools as unknown rather than treating active declarations as executable grants. Admission performs the real intersection and remaining checks; inspect a task's `tools` in Hub Details or the `subagent` status action. RPC, JSON and print modes retain the structured `{toolPolicy, profiles}` message instead of opening an overlay. Invalid configuration or missing/invalid granted skills fails resolution, as at admission.
 
 ![Native-renderer illustration of the read-only Subagent Profiles overview, with General selected and separate hints for entering settings, editing and going back.](docs/images/subagent-profiles.svg)
 
@@ -183,14 +184,17 @@ _Subagent Hub at default capacity: tasks and conversations side by side, with ne
 | Home / End            | Top / latest output                                                         |
 | Tab                   | Switch between thread, details and tools                                    |
 | /                     | Filter the subagent list                                                    |
-| s / m                 | Steer / send an inbox message                                               |
+| Enter                 | Focus the thread-column composer to steer the selected running task         |
+| m                     | Send an inbox message                                                       |
 | x, then y             | Stop the selected subtree; Enter does not confirm                           |
 | w / p                 | Wait briefly for an outcome / park an idle task                             |
 | ?                     | Open browse help; ? or cancel returns to the same view and reading position |
-| Enter                 | Close the Hub in browse mode; send/apply in input                           |
+| Enter (in input)      | Send the steer or inbox message, or apply the filter                        |
 | Esc / Ctrl+C          | Cancel input, return from help, or close the Hub                            |
 
-These are the default keys. The footer names the next Tab view and all configured confirm/cancel browse-close bindings. Tool expansion uses the configured `app.tools.expand` keys (default Ctrl+O), with its current expanded/collapsed state shown in the thread footer; unbound actions have no fallback key. Browse `?` opens observation-only, scrollable help that blocks underlying controls. In filter/steer/inbox inputs, printable `?`, j/k and Space remain text. Stop still requires **y**, never Enter.
+These are the default keys. The footer names the next Tab view, the configured confirm key for steering and the configured cancel keys that close the Hub. Enter never closes the Hub. Tool expansion uses the configured `app.tools.expand` keys (default Ctrl+O), with its current expanded/collapsed state shown in the thread footer; unbound actions have no fallback key. Browse `?` opens observation-only, scrollable help that blocks underlying controls. In filter/steer/inbox inputs, printable `?`, j/k and Space remain text. Stop still requires **y**, never Enter.
+
+The bottom row of the conversation column is a steering composer for the selected task. It shows whether the task can be steered: only running tasks accept steering. Press Enter to focus it, type the message and press Enter to send, or Esc to leave without sending. The target is pinned when the composer opens, so selecting another task or filtering does not retarget it. An empty message sends nothing. If the task stops before you send, nothing is sent and your text stays in the composer until you press Esc.
 
 Mouse-wheel scrolling works in fullscreen mode. In regular mode, use the keyboard controls because the terminal owns mouse scrollback. Actions and pending/success/error notices identify the original task UUID, generation and task label even after selecting another task or filtering it out. Controls refuse to submit if the window cannot show the full target. A stopped-and-drained notice appears only after drain completes; inbox receipt state and queued/handled steering are not model acknowledgment. Navigation, help, resize and closing do not dispatch task controls.
 
@@ -254,7 +258,7 @@ request consumes the request budget.
 Each failed eligible request gets two same-model retries before advancing. Transient outages
 and exhausted quota/credits are eligible; authentication, permission, invalid requests,
 refusals, tool failures and cancellation are not. Backups remain selected across explicit
-resume until operator reset. Every attempt consumes the current window's request budget;
+resume until a fallback reset. Every attempt consumes the current window's request budget;
 backoff consumes the current deadline window, if one is configured.
 
 An explicit task `model` stays pinned unless `fallback:true` opts into that model's suffix of
@@ -262,10 +266,11 @@ the profile chain. `fallback:false` disables chaining. Task `models` can remove 
 not add or reorder them. Fallback and prewalk cannot be combined. Listing a provider in a
 chain authorizes sending that child's conversation to it; failed calls may still cost money.
 
-Inspect `/subagent-status <task-id> <generation>`. To reset an idle/paused retained child,
-use `/subagent-fallback-reset <task-id> <generation>`. Reset sends no request and replenishes
-no budgets or deadline. An exhausted failed child requires this operator action before
-explicit resume; model-facing tools cannot reset routing. No state survives parent shutdown.
+The orchestrator inspects routing with the `subagent` status action. To retry an exhausted
+chain, ask it to reset the idle/paused retained child with root-only
+`delegate_coordinate` `{"action":"reset_fallback","target":{"id":"<task-id>","generation":1}}`
+and then resume it. Reset sends no request and replenishes no budgets or deadline; the resume
+opens its ordinary new window. Children cannot reset routing. No state survives parent shutdown.
 See [configuration, safety and diagnostics](docs/advanced-policies.md#profile-owned-fallback-chains).
 
 Default task limits are **no deadline**, **200 direct model requests** and **500 tool calls** per execution window:

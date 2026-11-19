@@ -956,7 +956,8 @@ export class DelegationCoordinator {
         await this.revalidateExecutionFallback(entry);
         assertResumable();
         fallback = availableFallback(input.context, fallback, fallback.index);
-        if (fallback.exhausted) throw new Error("Fallback exhausted; operator reset required");
+        if (fallback.exhausted)
+          throw new Error("Fallback exhausted; delegate_coordinate reset_fallback required");
       }
       const selected: ModelSelection = fallback
         ? fallback.chain[fallback.index]
@@ -1203,7 +1204,8 @@ export class DelegationCoordinator {
   private async revalidateExecutionFallback(entry: Entry): Promise<void> {
     const state = entry.state.fallback;
     if (!state) return;
-    if (state.exhausted) throw new Error("Fallback exhausted; operator reset required");
+    if (state.exhausted)
+      throw new Error("Fallback exhausted; delegate_coordinate reset_fallback required");
     authorizeFallback(entry.input.context, state.chain);
     let current: Entry | undefined = entry;
     let descendant: Entry | undefined;
@@ -1220,7 +1222,9 @@ export class DelegationCoordinator {
         current === entry &&
         JSON.stringify(profile.fallback) !== JSON.stringify(entry.input.profile.fallback)
       )
-        throw new Error("Fallback configuration changed; operator reset required");
+        throw new Error(
+          "Fallback configuration changed; delegate_coordinate reset_fallback required",
+        );
       for (const target of state.chain)
         if (!admittedModel(current, target) || !allowsModel(profile, target))
           throw new Error("Fallback model authorization revoked");

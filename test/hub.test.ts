@@ -411,11 +411,13 @@ test("Hub selection survives streaming/new completion; search, tabs, full transc
   assert.match(output(), /FULL LINE 99/);
   hub.handleInput!("\t");
   hub.handleInput!("\x1b[F");
-  assert.match(output(), /Direct requests unavailable/);
+  assert.match(output(), /Direct tokens unavailable/);
   hub.handleInput!("\t");
   assert.match(output(), /TOOLS/);
-  hub.handleInput!("s");
+  assert.match(output(), /Steer · Enter to compose a message for this task/);
+  hub.handleInput!("\r");
   hub.handleInput!("new direction");
+  assert.match(output(), /Steer > new direction/);
   assert.match(output(), /Target: second #7/);
   hub.handleInput!("\r");
   await new Promise((resolve) => setImmediate(resolve));
@@ -435,8 +437,11 @@ test("Hub selection survives streaming/new completion; search, tabs, full transc
   assert.match(output(), /> [├└] ● inspect first/);
   assert.doesNotMatch(output(), /[├└] ● inspect second/);
   hub.handleInput!("\r");
+  assert.match(output(), /Steer > /);
   hub.handleInput!("\x1b");
-  assert.equal(closed, 2);
+  assert.equal(closed, 0, "Enter focuses the composer and Esc leaves it; neither closes");
+  hub.handleInput!("\x1b");
+  assert.equal(closed, 1);
   assert.equal(calls.length, 2, "navigation/closing never invokes controls");
   hub.dispose();
   assert.ok(detached);
@@ -665,15 +670,23 @@ for (const action of ["steer", "stop", "message"] as const) {
       () => 24,
     );
     const render = () => stripAnsi(hub.render(100).join("\n"));
+    const open = () =>
+      hub.handleInput!(action === "steer" ? "\r" : action === "message" ? "m" : "x");
     const begin = () => {
       render();
-      hub.handleInput!(action === "steer" ? "s" : action === "message" ? "m" : "x");
+      open();
       if (action !== "stop") hub.handleInput!("original target only");
       assert.match(render(), /Target: A #7/);
     };
     const submit = async () => {
       hub.handleInput!(action !== "stop" ? "\r" : "y");
       await new Promise((resolve) => setImmediate(resolve));
+      if (action === "steer") {
+        // A refused steer keeps its pinned target and draft in the composer until Esc.
+        assert.match(render(), /Target: A #7/);
+        assert.match(render(), /Steer > original target only/);
+        hub.handleInput!("\x1b");
+      }
     };
     try {
       hub.handleInput!("/");
@@ -721,10 +734,10 @@ for (const action of ["steer", "stop", "message"] as const) {
       hub.handleInput!("\x15");
       hub.handleInput!("draining");
       hub.handleInput!("\r");
-      hub.handleInput!(action === "steer" ? "s" : action === "message" ? "m" : "x");
+      open();
       assert.match(
         render(),
-        /Controls unavailable/,
+        action === "steer" ? /Steering unavailable/ : /Controls unavailable/,
         "already draining targets cannot open controls",
       );
       children[0] = { ...children[0], status: "running" };
@@ -738,7 +751,7 @@ for (const action of ["steer", "stop", "message"] as const) {
       hub.handleInput!("\x1b");
       assert.doesNotMatch(render(), /Target:/, "cancel clears pinned target");
       hub.handleInput!("\x1b[B");
-      hub.handleInput!(action === "steer" ? "s" : action === "message" ? "m" : "x");
+      open();
       assert.match(render(), /Target: B #9/, "next interaction captures its own target");
     } finally {
       hub.dispose();
@@ -1066,7 +1079,7 @@ test("Hub prefilled filter editing starts at the native Input end after an empty
     hub.handleInput!("/");
     hub.handleInput!("alpha");
     hub.handleInput!("\r");
-    hub.handleInput!("s");
+    hub.handleInput!("m");
     hub.handleInput!("\x1b"); // Input cursor is now at zero, filter is still "alpha".
     hub.handleInput!("/");
     hub.handleInput!(" beta");
@@ -1143,7 +1156,7 @@ for (const action of ["stop", "steer", "message"] as const) {
       return stripAnsi(lines.join("\n"));
     };
     const begin = () => {
-      hub.handleInput!(action === "stop" ? "x" : action === "steer" ? "s" : "m");
+      hub.handleInput!(action === "stop" ? "x" : action === "steer" ? "\r" : "m");
       if (action !== "stop") hub.handleInput!("original payload");
     };
     const submit = async () => {
@@ -1405,7 +1418,7 @@ test("Hub native thread opens at live tail, detaches for laptop/page reading, fo
     hub.handleInput!("\t");
     hub.handleInput!("\t");
     assert.match(output(), /LIVE/);
-    hub.handleInput!("s");
+    hub.handleInput!("\r");
     hub.handleInput!("j");
     hub.handleInput!("k");
     output();
@@ -1466,14 +1479,18 @@ test("Hub normalized wheel is contained to its reading viewport, never the roste
     const rendered = before.split("\n");
     const separatorY = rendered.findIndex((line) => line.startsWith("├"));
     assert.equal(separatorY, 22);
-    for (const y of [separatorY - 1, separatorY, separatorY + 1, 26]) {
+    for (const y of [separatorY - 2, separatorY - 1, separatorY, separatorY + 1, 26]) {
       hub.handleMouse?.({ ...event, y });
-      assert.equal(output(), before, "position row, separator and footer must not scroll");
+      assert.equal(
+        output(),
+        before,
+        "position row, composer, separator and footer must not scroll",
+      );
     }
-    hub.handleMouse?.({ ...event, y: separatorY - 2 });
+    hub.handleMouse?.({ ...event, y: separatorY - 3 });
     assert.notEqual(output(), before, "last reading row remains wheel-scrollable");
     const position = output().match(/(\d+)–(\d+)\/\d+ lines/)!;
-    assert.equal(Number(position[2]) - Number(position[1]) + 1, 18);
+    assert.equal(Number(position[2]) - Number(position[1]) + 1, 17);
     hub.handleInput!("\x1b[6~");
     const nextPosition = output().match(/(\d+)–(\d+)\/\d+ lines/)!;
     assert.equal(Number(nextPosition[1]) - Number(position[1]), 6, "page clamps at the live tail");
@@ -1963,11 +1980,15 @@ for (const binding of ["ctrl+o", "ctrl+g", "disabled"] as const) {
       assert.match(output(), /Tools collapsed/);
       assert.ok(output().includes(binding === "disabled" ? "unbound" : binding));
       assert.doesNotMatch(output(), /GLOBAL_BODY_49/);
-      for (const mode of ["/", "s", "m", "x"]) {
+      for (const mode of ["/", "\r", "m", "x"]) {
         hub.handleInput!(mode);
         hub.handleInput!(key);
         hub.handleInput!("\x1b");
-        assert.match(output(), /Tools collapsed/, `${mode} cannot toggle thread display`);
+        assert.match(
+          output(),
+          /Tools collapsed/,
+          `${JSON.stringify(mode)} cannot toggle thread display`,
+        );
       }
       if (binding === "ctrl+g") {
         hub.handleInput!("\x0f");
@@ -2286,13 +2307,14 @@ const footerRows = (lines: string[]) => {
   return plain.slice(plain.findIndex((line) => line.startsWith("├")) + 1, -1);
 };
 
-for (const [name, user, close, closing, inert] of [
-  ["default", {}, "escape/ctrl+c/enter", ["\x1b", "\x03", "\r"], []],
+for (const [name, user, close, steer, closing, inert] of [
+  ["default", {}, "escape/ctrl+c", "enter", ["\x1b", "\x03"], []],
   [
     "remapped",
     { "tui.select.cancel": "ctrl+q", "tui.select.confirm": "ctrl+w" },
-    "ctrl+q/ctrl+w",
-    ["\x11", "\x17"],
+    "ctrl+q",
+    "ctrl+w",
+    ["\x11"],
     ["\x1b", "\r", "\x03"],
   ],
 ] as const) {
@@ -2332,7 +2354,7 @@ for (const [name, user, close, closing, inert] of [
           assert.ok(lines.every((line) => visibleWidth(line) === width));
           const footer = footerRows(lines);
           for (const hint of [
-            "s Steer",
+            `${steer} Steer`,
             "m Inbox",
             "x Stop",
             "/ Filter",
@@ -2412,7 +2434,8 @@ test("Hub ? help is modal and observation-only, then restores selection, view an
     assert.match(shown, /Subagent Hub · Help/);
     assert.match(shown, /observation only/);
     assert.match(shown, /x, then y +Stop subtree; reported after drain/);
-    assert.match(shown, /escape\/ctrl\+c\/enter +Close the Hub; tasks keep running/);
+    assert.match(shown, /escape\/ctrl\+c +Close the Hub; tasks keep running/);
+    assert.match(shown, /enter +Steer the selected running task in the composer/);
     assert.match(shown, /ctrl\+o +Toggle all tool output/);
     assert.match(shown, /\? or escape\/ctrl\+c: back to Hub/);
     assert.doesNotMatch(shown, /beta LINE/, "help replaces the thread instead of layering on it");
@@ -2505,13 +2528,13 @@ test("Hub text inputs keep ?, j, k and Space printable; stop confirmation ignore
   const output = () => flat(hub.render(72));
   try {
     output();
-    hub.handleInput!("s");
-    for (const key of ["?", " ", "j", " ", "k"]) hub.handleInput!(key);
-    assert.match(output(), /Steer: > \? j k/);
+    hub.handleInput!("\r");
+    for (const key of ["?", " ", "j", " ", "k", " ", "s", "x"]) hub.handleInput!(key);
+    assert.match(output(), /Steer > \? j k sx/);
     assert.doesNotMatch(output(), /Help/);
     hub.handleInput!("\r");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(sent, [["steer", "alpha", "? j k"]]);
+    assert.deepEqual(sent, [["steer", "alpha", "? j k sx"]]);
     hub.handleInput!("m");
     for (const key of ["?", " ", "j", " ", "k"]) hub.handleInput!(key);
     assert.match(output(), /Inbox: > \? j k/);
@@ -2533,9 +2556,61 @@ test("Hub text inputs keep ?, j, k and Space printable; stop confirmation ignore
   }
 });
 
+test("Hub thread-column composer explains availability, ignores empty sends and fits narrow layouts", async (t) => {
+  const coordinator = new DelegationCoordinator("unused", "root");
+  const children = [
+    snapshot("alpha"),
+    snapshot("done", { status: "settled", disposed: true, assignment: "finished work" }),
+  ];
+  t.mock.method(coordinator, "list", () => structuredClone(children));
+  t.mock.method(coordinator, "snapshot", (ref: ChildRef) =>
+    structuredClone(children.find((child) => child.id === ref.id)),
+  );
+  t.mock.method(coordinator, "messages", () => []);
+  const sent: string[] = [];
+  t.mock.method(coordinator, "steer", async (_ref: ChildRef, text: string) => {
+    sent.push(text);
+    return "queued";
+  });
+  let closed = 0;
+  const hub = createHub(
+    coordinator,
+    theme,
+    hubBindings(),
+    () => {},
+    () => closed++,
+    dependencies,
+    () => 21,
+  );
+  const output = (width = 90) => stripAnsi(hub.render(width).join("\n"));
+  try {
+    for (const width of [90, 54]) {
+      const lines = output(width).split("\n");
+      const separator = lines.findIndex((line) => line.startsWith("├"));
+      assert.match(lines[separator - 1], /Steer · Enter to compose a message for this task/);
+    }
+    hub.handleInput!("\r");
+    hub.handleInput!("   ");
+    hub.handleInput!("\r");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(sent, [], "whitespace-only drafts send nothing");
+    assert.match(output(), /Nothing to send/);
+    assert.match(output(), /Target: alpha #1/, "composer stays focused after an empty send");
+    hub.handleInput!("\x1b");
+    hub.handleInput!("\x1b[B");
+    assert.match(output(54), /Steer · unavailable · ended/);
+    hub.handleInput!("\r");
+    assert.match(output(), /Steering unavailable/);
+    assert.doesNotMatch(output(), /Target:/);
+    assert.equal(closed, 0, "Enter never closes the Hub");
+  } finally {
+    hub.dispose();
+  }
+});
+
 const delayed = {
   stop: { key: "x", submit: "y", label: "Stop", pending: "stopping and draining…" },
-  steer: { key: "s", submit: "\r", label: "Steer", pending: "sending…" },
+  steer: { key: "\r", submit: "\r", label: "Steer", pending: "sending…" },
   message: { key: "m", submit: "\r", label: "Inbox", pending: "sending…" },
   wait: {
     key: "w",
@@ -2775,7 +2850,8 @@ test("Hub remapped input/cancel hints and unbound expansion/help have no default
   );
   const output = () => flat(hub.render(72));
   try {
-    assert.match(output(), /ctrl\+q\/ctrl\+z\/ctrl\+w\/ctrl\+e: close/);
+    assert.match(output(), /ctrl\+q\/ctrl\+z: close/);
+    assert.match(output(), /ctrl\+w\/ctrl\+e Steer/);
     assert.match(output(), /Tools collapsed · unbound: toggle all/);
     hub.handleInput!("\x0f");
     assert.match(output(), /Tools collapsed/);
@@ -2789,7 +2865,9 @@ test("Hub remapped input/cancel hints and unbound expansion/help have no default
     hub.handleInput!("\x1b");
     assert.match(output(), /Help/, "unbound default Escape cannot exit help");
     hub.handleInput!("\x11");
-    hub.handleInput!("s");
+    hub.handleInput!("\r");
+    assert.doesNotMatch(output(), /Target:/, "default Enter is inert under remapped confirm");
+    hub.handleInput!("\x17");
     hub.handleInput!("? j k");
     assert.match(output(), /ctrl\+w\/ctrl\+e send · ctrl\+q\/ctrl\+z back/);
     rows = 4;
@@ -2799,11 +2877,11 @@ test("Hub remapped input/cancel hints and unbound expansion/help have no default
     hub.handleInput!("\x17");
     assert.deepEqual(sent, []);
     rows = 21;
-    assert.match(output(), /Steer: > \? j k/);
+    assert.match(output(), /Steer > \? j k/);
     hub.handleInput!("\x05");
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(sent, ["? j k"]);
-    hub.handleInput!("s");
+    hub.handleInput!("\x05");
     output();
     hub.handleInput!("cancel me");
     hub.handleInput!("\x1a");

@@ -52,7 +52,7 @@ try {
     resourceLoader: loader,
     modelRuntime: runtime,
     model: controlled.getModel(),
-    tools: ["read", "grep", "find", "ls", "delegate_task"],
+    tools: ["read", "grep", "find", "ls", "delegate_task", "subagent"],
     settingsManager: settings,
     sessionManager: SessionManager.create(root, join(root, "sessions")),
   });
@@ -66,7 +66,11 @@ try {
     await session.prompt("delegate example");
     const ref = events.at(-1)!.child;
     assert.equal(ref.status, "running");
-    await session.prompt(`/subagent-steer ${ref.id} ${ref.generation} queued example steering`);
+    await session.prompt(`steer example ${ref.id}@${ref.generation}`);
+    const steered = session.messages.findLast(
+      (message) => message.role === "toolResult" && message.toolName === "subagent",
+    );
+    assert.ok(steered?.role === "toolResult" && !steered.isError, JSON.stringify(steered));
     await session.reload();
     const final = events.filter((event) => event.child.id === ref.id).at(-1)!.child;
     assert.equal(final.status, "cancelled");
