@@ -69,8 +69,9 @@ credential or destination is automatically discovered. Parent auth/refresh remai
 by the public registry; this feature neither copies keys nor loads parent extensions.
 
 Each eligible failed request receives **two same-model retries** (three attempts total)
-before advancing. Native Pi retries own transient attempts; a package-owned public
-`agent_before_settle` controller handles exhausted native retries and quota/credit limits.
+before advancing. Children without a chain also receive the two native same-model retries
+for transient errors, then fail; they have no quota/credit controller. Native Pi retries own
+transient attempts; a package-owned public `agent_before_settle` controller handles exhausted native retries and quota/credit limits.
 Quota backoff starts at 2 seconds and doubles, capped at 60 seconds. Provider retries are
 zero in the owned child settings, preventing retry multiplication. Success resets only
 the failure counter, not the selected backup. Authentication/permission failures, invalid
@@ -82,7 +83,8 @@ assistant/tool-result pairs remain and are not replayed by the SDK. A model may 
 request a similar action later: this is not an exactly-once external-side-effect guarantee.
 Targets lacking image input are skipped rather than receiving Pi image placeholders.
 Context/output limits and effort are validated; context overflow is not a fallback trigger.
-No conversation truncation or capability conversion is added to make a target fit.
+Pi's own automatic compaction may summarize history; no other truncation or capability
+conversion is added to make a target fit.
 
 Every physical attempt, including retries, consumes the current window's direct-request
 budget. Failed attempts can incur charges; `fallback.attempts[].usageKnown` distinguishes
