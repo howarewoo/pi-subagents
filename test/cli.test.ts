@@ -29,11 +29,8 @@ test("local package manifest loads the root production entrypoint", async () => 
       [join(repo, "index.ts")],
     );
     assert.deepEqual([...loaded.extensions[0].commands.keys()].sort(), [
-      "subagent-fallback-reset",
       "subagent-hub",
       "subagent-profiles",
-      "subagent-status",
-      "subagent-steer",
       "subagent-stop",
     ]);
   } finally {

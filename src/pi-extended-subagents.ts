@@ -87,7 +87,7 @@ export default function delegation(pi: ExtensionAPI) {
           ? `Transcript: ${transcript}\n`
           : "") + text,
     );
-    return `${clipped.content}${clipped.truncated ? "\n[Preview truncated; inspect full artifact/transcript references or subagent-status for one identity]" : ""}`;
+    return `${clipped.content}${clipped.truncated ? "\n[Preview truncated; inspect full artifact/transcript references or the subagent status action for one identity]" : ""}`;
   };
   const compatible = (state: ChildSnapshot) => ({
     ...state,
@@ -421,7 +421,7 @@ export default function delegation(pi: ExtensionAPI) {
     label: "Coordinate delegation",
     exposure: "model-only",
     description:
-      "Live-parent identity-pinned coordination. message targets a running family agent (omit target for root inbox, direct children only); inbox reads own bounded mailbox; wait targets an outcome or own inbox with required 1–60000ms timeout, retaining capacity. No transcript access. Child actions require explicit operator grants. Root additionally has status/stop/park, paused/completed resume (assignment is the appended continuation), and idle followup/parked revive. Resume retains identity and full context, starts a fresh window (fresh request/tool budgets and deadline if configured; spawns and snapshot totals stay cumulative), and requires explicit child resumes after parent resume. Followup/revive create a fresh generation/session with current model/auth and narrowed current grants, no old tool replay or historical recovery. Successful root resume/followup/revive each send one outcome after actual drain and wake the parent (or queue a follow-up if busy), potentially adding model turns/costs. Rejections send none; no automatic resume or guaranteed task continuation. Message accepted/queued is NOT model acknowledgment; delivered means transcript/inbox visibility only. 4096-byte messages, 64 mailbox/waiters, 512 messages and 64 generations per live parent.",
+      "Live-parent identity-pinned coordination. message targets a running family agent (omit target for root inbox, direct children only); inbox reads own bounded mailbox; wait targets an outcome or own inbox with required 1–60000ms timeout, retaining capacity. No transcript access. Child actions require explicit operator grants. Root additionally has status/stop/park, reset_fallback (idle/paused retained child with a profile fallback chain: revalidates grants, selects the first available target, sends no model request and renews no budgets or deadline; resume afterwards to continue an exhausted chain), paused/completed resume (assignment is the appended continuation), and idle followup/parked revive. Resume retains identity and full context, starts a fresh window (fresh request/tool budgets and deadline if configured; spawns and snapshot totals stay cumulative), and requires explicit child resumes after parent resume. Followup/revive create a fresh generation/session with current model/auth and narrowed current grants, no old tool replay or historical recovery. Successful root resume/followup/revive each send one outcome after actual drain and wake the parent (or queue a follow-up if busy), potentially adding model turns/costs. Rejections send none; no automatic resume or guaranteed task continuation. Message accepted/queued is NOT model acknowledgment; delivered means transcript/inbox visibility only. 4096-byte messages, 64 mailbox/waiters, 512 messages and 64 generations per live parent.",
     parameters: coordinationParameters,
     async execute(callerId, args, signal, _update, ctx) {
       if (["resume", "followup", "revive"].includes(args.action)) requireSupportedHost();
@@ -443,6 +443,9 @@ export default function delegation(pi: ExtensionAPI) {
         if (actor) throw new Error("Root-only coordination action");
         if (args.action === "stop") {
           await registry.stop(args.target);
+          value = registry.snapshot(args.target);
+        } else if (args.action === "reset_fallback") {
+          await registry.resetFallback(args.target);
           value = registry.snapshot(args.target);
         } else if (args.action === "park") {
           registry.park(args.target);
@@ -547,7 +550,7 @@ export default function delegation(pi: ExtensionAPI) {
       "subagent launches are async by default and wake this session after actual drain. Continue independent work or yield; do not poll or sleep. Use the exact returned id (UUID@generation) for status, steer, stop or resume. Resume continues a drained paused or completed conversation with its same identity/generation, full SDK context and a fresh request/tool budget window; unavailable context and stopped/failed identities reject. Use explicit delegate_coordinate followup/revive for fresh completed work.",
     ],
     description:
-      "Native delegation for orchestration and coding task owners. Launch {agent,task,cwd?,model?,async?} or an ordered {tasks:[...],async?,cwd?} batch. worker maps explicitly to the implementation profile; configured custom roles are supported; unknown agent names reject. Model strings require exact provider/id[:effort] and operator grants. Actions: agents, list, status/stop with exact returned id, steer/resume with id and message. Resume requires a drained paused or completed session and restores its full conversation with the same identity/generation and session count; unavailable context and stopped/failed identities reject. Uses the same registry, parent permissions, limits and FIFO capacity as delegate_task. Writers and parent tools may run together; caller coordinates shared writes, with no isolation or collision prevention. Existing workspaces only: file paths and shell cwd are explicitly adapted through root builtin hooks. No automatic worktree creation/commits/apply/deletion, detached survival, script workflows or blanket competing API parity. Do not load another provider of the subagent tool alongside this extension.",
+      "Native delegation for orchestration and coding task owners. Launch {agent,task,cwd?,model?,async?} or an ordered {tasks:[...],async?,cwd?} batch. worker maps explicitly to the implementation profile; configured custom roles are supported; unknown agent names reject. Model strings require exact provider/id[:effort] and operator grants. Actions: agents, list, status/stop with exact returned id, steer/resume with id and message. Resume requires a drained paused or completed session and restores its full conversation with the same identity/generation and session count; unavailable context and stopped/failed identities reject; a failed child with an exhausted profile fallback chain can resume after delegate_coordinate reset_fallback. Uses the same registry, parent permissions, limits and FIFO capacity as delegate_task. Writers and parent tools may run together; caller coordinates shared writes, with no isolation or collision prevention. Existing workspaces only: file paths and shell cwd are explicitly adapted through root builtin hooks. No automatic worktree creation/commits/apply/deletion, detached survival, script workflows or blanket competing API parity. Do not load another provider of the subagent tool alongside this extension.",
     parameters: compatibleParameters,
     async execute(callerId, args, signal, onUpdate, ctx) {
       if (!("action" in args) || args.action === "resume" || args.action === "steer")
@@ -664,36 +667,20 @@ export default function delegation(pi: ExtensionAPI) {
       });
     },
   });
-  pi.registerCommand("subagent-status", {
-    description: "List delegation identities, states and final results",
-    handler: async (args) =>
-      show(args.trim() ? coordinator.snapshot(ref(args)) : coordinator.list()),
-  });
-  pi.registerCommand("subagent-fallback-reset", {
-    description:
-      "Reset <task-id> <generation> fallback routing on an idle retained child; budgets and deadline unchanged",
-    handler: async (args) => {
-      await coordinator.resetFallback(ref(args));
-    },
-  });
   pi.registerCommand("subagent-stop", {
     description: "Stop <task-id> <generation> and drain it",
     handler: async (args) => {
       await coordinator.stop(ref(args));
     },
   });
-  pi.registerCommand("subagent-steer", {
-    description: "Steer <task-id> <generation> <text>",
-    handler: async (args) => {
-      const [id, generation, ...text] = args.trim().split(/\s+/);
-      await coordinator.steer(ref(`${id} ${generation}`), text.join(" "));
-    },
-  });
   pi.registerCommand("subagent-hub", {
     description:
-      "Subagent Hub: subagent roster, generation history, transcripts and pinned controls (TUI only)",
+      "Subagent Hub: roster, transcripts, steer composer and pinned controls (prints the roster outside the TUI)",
     handler: async (_args, ctx) => {
-      if (ctx.mode !== "tui") return;
+      if (ctx.mode !== "tui") {
+        show(coordinator.list());
+        return;
+      }
       await ctx.ui.custom<void>(
         (tui, theme, keys, done) =>
           createHub(

@@ -227,7 +227,28 @@ export function createHub(
     refresh();
     return false;
   };
+  const steerable = (child: ChildSnapshot) => !child.disposed && child.status === "running";
   const finishInput = () => {
+    if (mode === "steer" && interactionTarget) {
+      if (!lineText(input.getValue()).trim()) {
+        notice = `Nothing to send · type a message or ${bindingHint("tui.select.cancel")} to go back`;
+        refresh();
+        return;
+      }
+      // Keep the draft when the pinned target can no longer be steered; nothing was sent.
+      let reason: string | undefined;
+      try {
+        const current = coordinator.snapshot(interactionTarget);
+        if (!current || !steerable(current)) reason = "target is no longer running";
+      } catch (error) {
+        reason = String(error);
+      }
+      if (reason) {
+        notice = `Steer ${interactionLabel}: ${reason}; no action sent · ${bindingHint("tui.select.cancel")} discards the draft`;
+        refresh();
+        return;
+      }
+    }
     if (interactionTarget && !canSubmitInteraction()) return;
     if (mode === "search") {
       query = lineText(input.getValue());
@@ -291,12 +312,7 @@ export function createHub(
       const wide = width >= 76;
       const leftWidth = wide ? Math.min(32, Math.max(24, Math.floor(inner / 3))) : 0;
       const threadWidth = wide ? inner - leftWidth - 3 : inner;
-      const close = [
-        ...new Set([
-          ...keybindings.getKeys("tui.select.cancel"),
-          ...keybindings.getKeys("tui.select.confirm"),
-        ]),
-      ].join("/");
+      const close = keybindings.getKeys("tui.select.cancel").join("/");
       const keyNames = (action: Parameters<typeof keybindings.getKeys>[0]) =>
         keybindings.getKeys(action).join("/") || "unbound";
       const footer: string[] = [];
@@ -330,7 +346,7 @@ export function createHub(
           "Home / End  Top / follow the live thread",
           "Tab  Next view: thread → details → tools",
           `/  Filter tasks; ${keyNames("tui.select.cancel")} keeps the previous filter`,
-          "s  Steer a running task (pinned target)",
+          `${keyNames("tui.select.confirm")}  Steer the selected running task in the composer (pinned target)`,
           "m  Inbox message; a receipt is not model acknowledgment",
           "x, then y  Stop subtree; reported after drain; Enter never confirms",
           "w  Wait up to 1000ms for an outcome",
@@ -375,9 +391,11 @@ export function createHub(
       footer.push(...targetLines.map((line) => theme.fg("accent", line)));
       if (mode === "search" || mode === "steer" || mode === "message") {
         input.focused = this.focused;
-        const label = mode === "search" ? "Filter: " : mode === "message" ? "Inbox: " : "Steer: ";
+        const label = mode === "search" ? "Filter: " : "Inbox: ";
+        // Steering text is edited in the thread-column composer, not the footer.
+        if (mode !== "steer")
+          footer.push(label + input.render(Math.max(1, inner - visibleWidth(label)))[0]);
         footer.push(
-          label + input.render(Math.max(1, inner - visibleWidth(label)))[0],
           `${bindingHint("tui.select.confirm")} ${mode === "search" ? "apply filter" : "send"} · ${bindingHint("tui.select.cancel")} back (no action)`,
         );
       } else if (mode === "stop")
@@ -401,7 +419,7 @@ export function createHub(
                     "j/k scroll",
                     "End live",
                   ]),
-              "s Steer",
+              `${keyNames("tui.select.confirm")} Steer`,
               "m Inbox",
               "x Stop",
               ...(wide ? ["w Wait", "p Park"] : []),
@@ -419,7 +437,9 @@ export function createHub(
           `Tools ${toolsExpanded ? "expanded" : "collapsed"} · ${keybindings.getKeys("app.tools.expand").join("/") || "unbound"}: toggle all`,
         );
       // Targets, controls and notices are indivisible; optional hints must yield first.
-      const requiredFooter = interactionTarget ? targetLines.length + 2 : 0;
+      const requiredFooter = interactionTarget
+        ? targetLines.length + (mode === "steer" ? 1 : 2)
+        : 0;
       const footerBudget =
         requiredFooter || height >= 8 ? Math.max(2, height - 7, requiredFooter) : 0;
       const shownNotice = noticeLines.length <= footerBudget - requiredFooter ? noticeLines : [];
@@ -428,10 +448,12 @@ export function createHub(
         ...shownNotice,
         ...(optionalBudget ? footer.slice(-optionalBudget) : []),
       ];
-      if (interactionTarget) interactionVisibleAtHeight = height;
       const separatorRows = shownFooter.length ? 1 : 0;
       const paneHeight = Math.max(1, height - 2 - shownFooter.length - separatorRows);
-      viewport = Math.max(1, paneHeight - 3);
+      // A focused composer outranks reading rows; idle hints need room for a reading line.
+      const composerRows = mode === "steer" || paneHeight >= 4 ? 1 : 0;
+      if (interactionTarget) interactionVisibleAtHeight = height;
+      viewport = Math.max(1, paneHeight - 3 - composerRows);
       let detail: string[] = [];
       let nativeLines: string[] | undefined;
       if (child) {
@@ -518,7 +540,7 @@ export function createHub(
         x: wide ? 2 + leftWidth + 3 : 2,
         y: 3,
         width: threadWidth,
-        height: Math.max(0, paneHeight - 3),
+        height: Math.max(0, paneHeight - 3 - composerRows),
       };
       const content = wrapped
         .slice(offset, offset + viewport)
@@ -536,6 +558,21 @@ export function createHub(
         : "No selection";
       const viewLabel = `${tab.toUpperCase()} · Tab: ${tab === "thread" ? "details" : tab === "details" ? "tools" : "thread"}`;
       const position = `${tab === "thread" ? (following ? "LIVE · " : "READING · ") : ""}${offset + 1}–${Math.min(wrapped.length, offset + viewport)}/${wrapped.length} lines${tab === "thread" ? (following ? " · k/PgUp read" : " · End: live") : offset < maxOffset ? " · more ↓" : ""}`;
+      // The native Input renders its own "> " prompt after this label.
+      const composerLabel = "Steer ";
+      const composer =
+        mode === "steer" && interactionTarget
+          ? theme.fg("accent", composerLabel) +
+            input.render(Math.max(1, threadWidth - visibleWidth(composerLabel)))[0]
+          : theme.fg(
+              "muted",
+              "Steer · " +
+                (!child
+                  ? "no task selected"
+                  : steerable(child)
+                    ? `${bindingHint("tui.select.confirm")} to compose a message for this task`
+                    : `unavailable · ${child.disposed ? "ended" : child.status}${historical(child) ? " · history" : ""}`),
+            );
       const pane: string[] = [];
       if (wide) {
         const slots = Math.max(1, Math.floor((paneHeight - 2) / 2));
@@ -582,7 +619,11 @@ export function createHub(
             ) +
               theme.fg("border", " │ ") +
               cell(
-                index === paneHeight - 1 ? theme.fg("muted", position) : (right[index] ?? ""),
+                composerRows && index === paneHeight - 1
+                  ? composer
+                  : index === paneHeight - 1 - composerRows
+                    ? theme.fg("muted", position)
+                    : (right[index] ?? ""),
                 threadWidth,
               ),
           );
@@ -609,10 +650,11 @@ export function createHub(
           );
         if (paneHeight > 2)
           pane.push(
-            ...content.slice(0, paneHeight - 3),
-            ...Array(Math.max(0, paneHeight - 3 - content.length)).fill(""),
+            ...content.slice(0, Math.max(0, paneHeight - 3 - composerRows)),
+            ...Array(Math.max(0, paneHeight - 3 - composerRows - content.length)).fill(""),
             theme.fg("muted", position),
           );
+        if (composerRows) pane.splice(paneHeight - 1, pane.length, composer);
       }
       return [
         frame("╭", " Subagent Hub ", "╮"),
@@ -670,7 +712,18 @@ export function createHub(
         return;
       }
       if (keybindings.matches(data, "tui.select.confirm")) {
-        done();
+        const child = selection();
+        if (child && steerable(child)) {
+          mode = "steer";
+          interactionTarget = { id: child.id, generation: child.generation };
+          interactionLabel = describe(child);
+          interactionVisibleAtHeight = undefined;
+          input.setValue("");
+        } else
+          notice = child
+            ? "Steering unavailable: historical/disposed target, or task not running"
+            : "Select a running task to steer";
+        refresh();
         return;
       }
       if (
@@ -731,7 +784,7 @@ export function createHub(
           notice =
             "Followup/revive: native model-issued delegate_coordinate only. Hub command context has no permission-preserving tool dispatcher; no generation started.";
         }
-      } else if (data === "s" || data === "x" || data === "m") {
+      } else if (data === "x" || data === "m") {
         const child = selection();
         if (
           child &&
@@ -740,7 +793,7 @@ export function createHub(
           child.status !== "pausing" &&
           (data === "x" || child.status === "running")
         ) {
-          mode = data === "s" ? "steer" : data === "m" ? "message" : "stop";
+          mode = data === "m" ? "message" : "stop";
           interactionTarget = { id: child.id, generation: child.generation };
           interactionLabel = describe(child);
           interactionVisibleAtHeight = undefined;

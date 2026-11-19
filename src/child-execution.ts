@@ -309,7 +309,9 @@ export async function createChildExecution(
                   prior.message.stopReason === "error" &&
                   !eligible
                 )
-                  throw new Error("Terminal child model failure; explicit operator reset required");
+                  throw new Error(
+                    "Terminal child model failure; explicit delegate_coordinate reset_fallback required",
+                  );
                 if (eligible && entry.state.fallback.failures > FALLBACK_RETRIES) {
                   // Steering/follow-up work can start before the final settle boundary.
                   // It must not obtain a fourth physical attempt on the exhausted target.
@@ -326,7 +328,9 @@ export async function createChildExecution(
                   await selectFallback(entry.state.fallback.index);
                 }
                 if (entry.state.fallback.exhausted)
-                  throw new Error("Fallback exhausted; operator reset required");
+                  throw new Error(
+                    "Fallback exhausted; delegate_coordinate reset_fallback required",
+                  );
                 // Pi otherwise replaces unsupported images with placeholders. Never silently
                 // alter the request to fit a backup's capabilities.
                 const images = entry
@@ -354,7 +358,7 @@ export async function createChildExecution(
                   await selectFallback(fallback.index + 1);
                   if (entry.state.fallback!.exhausted)
                     throw new Error(
-                      "No fallback target accepts request capabilities; operator reset required",
+                      "No fallback target accepts request capabilities; delegate_coordinate reset_fallback required",
                     );
                 }
               }
@@ -739,7 +743,7 @@ export async function createChildExecution(
               ? entry.state.error
               : failed
                 ? entry.state.fallback?.exhausted
-                  ? `${last?.errorMessage ?? "Provider failure"}; fallback exhausted; operator reset required`
+                  ? `${last?.errorMessage ?? "Provider failure"}; fallback exhausted; delegate_coordinate reset_fallback required`
                   : (policyError ?? last?.errorMessage ?? "No final assistant outcome")
                 : missing
                   ? "Required structured result was not submitted successfully"

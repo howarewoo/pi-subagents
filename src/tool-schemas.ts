@@ -90,7 +90,12 @@ export const coordinationParameters = Type.Union([
   ),
   Type.Object(
     {
-      action: Type.Union([Type.Literal("park"), Type.Literal("stop"), Type.Literal("status")]),
+      action: Type.Union([
+        Type.Literal("park"),
+        Type.Literal("stop"),
+        Type.Literal("status"),
+        Type.Literal("reset_fallback"),
+      ]),
       target: identity,
     },
     { additionalProperties: false },

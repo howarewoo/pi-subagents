@@ -85,7 +85,7 @@ for (const batch of [false, true])
 
     const before = f.model.state.callCount;
     await f.session.prompt("/subagent-profiles");
-    await f.session.prompt("/subagent-status");
+    await f.session.prompt("/subagent-hub");
     assert.equal(f.model.state.callCount, before, "explicit commands do not infer");
     const profile = notices().at(-2)!;
     const status = notices().at(-1)!;

@@ -15,14 +15,29 @@ export function createControlledProvider() {
   });
   const respond: FauxResponseFactory = (context) => {
     provider.appendResponses([respond]);
-    const user = context.messages.find((message) => message.role === "user");
-    const text =
-      typeof user?.content === "string"
-        ? user.content
-        : (user?.content
-            .filter((block) => block.type === "text")
-            .map((block) => block.text)
-            .join("") ?? "");
+    const textOf = (user: (typeof context.messages)[number] | undefined) =>
+      user?.role !== "user"
+        ? ""
+        : typeof user.content === "string"
+          ? user.content
+          : user.content
+              .filter((block) => block.type === "text")
+              .map((block) => block.text)
+              .join("");
+    const latest = textOf(context.messages.findLast((message) => message.role === "user"));
+    // Operators steer through the orchestrator (or the Hub composer); there is no steer command.
+    if (latest.startsWith("steer example "))
+      return context.messages.at(-1)?.role === "toolResult"
+        ? fauxAssistantMessage("Parent steered the child")
+        : fauxAssistantMessage(
+            fauxToolCall("subagent", {
+              action: "steer",
+              id: latest.slice("steer example ".length),
+              message: "queued example steering",
+            }),
+            { stopReason: "toolUse" },
+          );
+    const text = textOf(context.messages.find((message) => message.role === "user"));
     if (text.startsWith("delegate example"))
       return context.messages.at(-1)?.role === "toolResult"
         ? fauxAssistantMessage("Parent accepted background identity")

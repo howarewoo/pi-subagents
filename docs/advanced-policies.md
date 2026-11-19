@@ -94,17 +94,21 @@ abort it without another request. Explicit resume retains route and failure coun
 its ordinary new window (fresh request/tool budgets and deadline, if configured);
 reset alone renews neither. New followup/revival generations validate a fresh chain.
 
-`/subagent-status <id> <generation>` reports the chain, current index/failure count,
+The `subagent` status action (and Hub Details) reports the chain, current index/failure count,
 `exhausted`, skipped targets, and physical attempt/error/usage-known history. Recovery
 context edits, physical selections/responses and recovery audit entries are in the SDK
 transcript. The route is scoped to this child identity/generation and retained parent
 lifetime; it is not restored after parent shutdown/reload.
 
-Exhaustion never wraps. `/subagent-fallback-reset <id> <generation>` is **operator-only**,
-requires an idle/paused retained child, revalidates current/admitted grants and scopes,
-and selects the first available target without a model request. It preserves attempts,
-limits and current-window budgets. A reset failed child may then explicitly resume, retaining
-the failed window as evidence. No model-facing reset action exists. A changed chain is
+Exhaustion never wraps. The root orchestrator resets routing with
+`delegate_coordinate` `{"action":"reset_fallback","target":{"id":"<id>","generation":<n>}}`.
+The action is **root-only** (child actors are rejected), requires an idle/paused retained
+child, revalidates current/admitted grants and scopes, and selects the first available
+target without a model request. It preserves attempts, limits and current-window budgets.
+A reset failed child may then explicitly resume, retaining the failed window as evidence.
+Because each resume opens a fresh request/tool window, repeated reset-and-resume cycles are
+bounded only by the orchestrator's own decisions; ask it to stop retrying when a provider is
+persistently unavailable. There is no operator slash command for reset. A changed chain is
 not silently remapped on resume: explicit reset and revalidation are required. Restore
 revoked grants or start a newly authorized operation when reset is denied.
 

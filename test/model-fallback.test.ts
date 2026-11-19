@@ -7,6 +7,7 @@ import {
   fauxAssistantMessage,
   fauxToolCall,
   createAssistantMessageEventStream,
+  type FauxResponseFactory,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { ModelRegistry } from "@earendil-works/pi-coding-agent";
@@ -41,7 +42,7 @@ function providers(runtime: Awaited<ReturnType<typeof fixture>>["runtime"]) {
   return { primary, backup };
 }
 
-test("profile primary is independent of physical/virtual parent; two quota retries, missing target skip, sticky resume and operator-only reset", async (t) => {
+test("profile primary is independent of physical/virtual parent; two quota retries, missing target skip, sticky resume and explicit reset", async (t) => {
   const { root, runtime, direct, coordinator, session } = await fixture(t);
   const { primary, backup } = providers(runtime);
   primary.setResponses([
@@ -221,6 +222,90 @@ test("exhaustion never wraps; operator reset retains failed-window evidence and 
   assert.equal(state.completedWindows?.[0].status, "failed");
   assert.equal(state.telemetry.requests, 4);
   assert.equal(state.fallback?.attempts.length, 4);
+});
+
+test("root model resets an exhausted chain with reset_fallback; child actors cannot", async (t) => {
+  const userText = (context: Parameters<FauxResponseFactory>[0]) => {
+    const user = context.messages.findLast((message) => message.role === "user");
+    return typeof user?.content === "string"
+      ? user.content
+      : (user?.content
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("") ?? "");
+  };
+  const f = await fixture(t, {
+    response: (context) => {
+      const text = userText(context);
+      const prefix = ["LAUNCH ", "COORD ", "CHILD COORD "].find((value) => text.startsWith(value));
+      if (context.messages.at(-1)?.role !== "toolResult" && prefix)
+        return fauxAssistantMessage(
+          fauxToolCall(
+            prefix === "LAUNCH " ? "delegate_task" : "delegate_coordinate",
+            JSON.parse(text.slice(prefix.length)),
+          ),
+          { stopReason: "toolUse" },
+        );
+      return fauxAssistantMessage("observed");
+    },
+  });
+  const { primary } = providers(f.runtime);
+  primary.setResponses([
+    ...Array.from({ length: 3 }, () =>
+      fauxAssistantMessage("503 failed", {
+        stopReason: "error",
+        errorMessage: "503 Service Unavailable",
+      }),
+    ),
+    fauxAssistantMessage("after model reset"),
+  ]);
+  const chain = { tools: ["read"], models: [a], fallback: [a] };
+  await configure(f.root, chain);
+  const latest = (ref: { id: string; generation: number }) =>
+    f.events
+      .filter((event) => event.child.id === ref.id && event.child.generation === ref.generation)
+      .at(-1)!.child;
+  const ref = await f.launch("exhaust finite chain");
+  // The background outcome wakes the parent; wait for that turn before prompting again.
+  await eventually(
+    () =>
+      !f.session.isStreaming &&
+      f.session.messages.some(
+        (message) => message.role === "custom" && JSON.stringify(message).includes(ref.id),
+      ),
+    15000,
+  );
+  assert.equal(latest(ref).fallback?.exhausted, true);
+  const target = { id: ref.id, generation: ref.generation };
+  const reset = JSON.stringify({ action: "reset_fallback", target });
+  await configure(f.root, { tools: ["read"], coordination: ["message"] });
+  const child = await f.launch(`CHILD COORD ${reset}`, "general", false);
+  assert.match(await readFile(latest(child).transcript!, "utf8"), /Root-only coordination action/);
+  assert.equal(latest(ref).fallback?.exhausted, true);
+  await configure(f.root, chain);
+  const coordinate = async (text: string) => {
+    await f.session.prompt(text);
+    return f.session.messages.findLast(
+      (message) => message.role === "toolResult" && message.toolName === "delegate_coordinate",
+    );
+  };
+  const resetResult = await coordinate(`COORD ${reset}`);
+  assert.ok(
+    resetResult?.role === "toolResult" && !resetResult.isError,
+    JSON.stringify(resetResult),
+  );
+  const resetState = resetResult.details as { fallback?: { exhausted: boolean; index: number } };
+  assert.equal(resetState.fallback?.exhausted, false);
+  assert.equal(resetState.fallback?.index, 0);
+  assert.equal(primary.state.callCount, 3);
+  const resumed = await coordinate(
+    "COORD " +
+      JSON.stringify({ action: "resume", target, assignment: "continue after model reset" }),
+  );
+  assert.ok(resumed?.role === "toolResult" && !resumed.isError, JSON.stringify(resumed));
+  await eventually(() => latest(ref).status === "settled");
+  assert.equal(latest(ref).completedWindows?.[0].status, "failed");
+  assert.equal(primary.state.callCount, 4);
 });
 
 for (const error of [
