@@ -1270,12 +1270,14 @@ export function createEditableProfileInspector(
             );
           // One spacer separates groups; rows inside a group stay dense so a full overview,
           // checklist or route fits the production 80×24 overlay.
-          if ((row.heading || row.id === "back-panel") && index > 0) lines.unshift("");
-          return { row, lines };
+          // Spans key off the row's first text line, so the spacer is counted separately.
+          const lead = (row.heading || row.id === "back-panel") && index > 0 ? 1 : 0;
+          if (lead) lines.unshift("");
+          return { row, lines, lead };
         });
         let start = 0;
         const spans = indexed.map((item) => {
-          const from = start;
+          const from = start + item.lead;
           start += item.lines.length;
           return { ...item, from };
         });
