@@ -84,13 +84,13 @@ Targets lacking image input are skipped rather than receiving Pi image placehold
 Context/output limits and effort are validated; context overflow is not a fallback trigger.
 No conversation truncation or capability conversion is added to make a target fit.
 
-Every physical attempt, including retries, consumes the same cumulative direct-request
+Every physical attempt, including retries, consumes the current window's direct-request
 budget. Failed attempts can incur charges; `fallback.attempts[].usageKnown` distinguishes
 unmeasured failed usage from a measured zero. Known usage remains in native transcript
 accounting; `telemetry.costIncomplete` marks the displayed cost as a known subtotal. Backoff is within the existing deadline window, and cancellation/deadlines
-abort it without another request. Explicit resume retains route, failure count and all
-cumulative budgets. Existing explicit resume starts its ordinary new deadline window;
-reset alone does not renew it. New followup/revival generations validate a fresh chain.
+abort it without another request. Explicit resume retains route and failure count, and starts
+its ordinary new window (fresh request/tool budgets and deadline, if configured);
+reset alone renews neither. New followup/revival generations validate a fresh chain.
 
 `/subagent-status <id> <generation>` reports the chain, current index/failure count,
 `exhausted`, skipped targets, and physical attempt/error/usage-known history. Recovery
@@ -101,7 +101,7 @@ lifetime; it is not restored after parent shutdown/reload.
 Exhaustion never wraps. `/subagent-fallback-reset <id> <generation>` is **operator-only**,
 requires an idle/paused retained child, revalidates current/admitted grants and scopes,
 and selects the first available target without a model request. It preserves attempts,
-limits and cumulative budgets. A reset failed child may then explicitly resume, retaining
+limits and current-window budgets. A reset failed child may then explicitly resume, retaining
 the failed window as evidence. No model-facing reset action exists. A changed chain is
 not silently remapped on resume: explicit reset and revalidation are required. Restore
 revoked grants or start a newly authorized operation when reset is denied.

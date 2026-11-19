@@ -11,6 +11,8 @@ export const assignmentHeadline = (child: ChildSnapshot) =>
     ?.replace(/^#{1,6}\s+/, "") || "Assignment";
 export const agentLabel = (child: ChildSnapshot) =>
   `${assignmentHeadline(child)} · ${lineText(child.profile)}`;
+export const deadlineLabel = ({ limits }: ChildSnapshot) =>
+  limits.deadlineMs ? `deadline ${limits.deadlineMs}ms per window` : "no deadline";
 export const active = (child: ChildSnapshot) => !child.disposed && child.status !== "paused";
 export const activity = (child: ChildSnapshot) =>
   (child.status === "paused"
@@ -111,7 +113,7 @@ export function taskCard(child: ChildSnapshot | undefined, expanded = false): st
           `Pause: ${child.pauseReason} · context ${child.retainedContext ? "retained" : "not yet available"} · resume via model control after drain`,
         ]
       : []),
-    `Window ${child.window ?? 1} · cumulative requests ${child.telemetry.requests ?? 0}/${child.limits.requests} · tools ${child.toolCalls}/${child.limits.tools} · spawns ${child.spawned ?? 0}/${child.limits.spawns}`,
+    `Window ${child.window ?? 1} · requests ${(child.telemetry.requests ?? 0) - (child.windowStart?.requests ?? 0)}/${child.limits.requests} · tools ${child.toolCalls - (child.windowStart?.toolCalls ?? 0)}/${child.limits.tools} · ${deadlineLabel(child)} · cumulative requests ${child.telemetry.requests ?? 0} · tools ${child.toolCalls} · spawns ${child.spawned ?? 0}/${child.limits.spawns}`,
     ...(child.artifacts ? [`Artifacts: ${JSON.stringify(child.artifacts)}`] : []),
     "Assignment: " + truncateToWidth(lineText(child.assignment), 480, "… [preview truncated]"),
     "Result: " +
@@ -193,7 +195,7 @@ export function taskDetails(
     `Direct tokens ${metric(child.telemetry.tokens)}`,
     `Context ${metric(child.telemetry.context)}`,
     `Parent ${child.parentId} #${child.parentGeneration ?? "root"} · depth ${child.depth} · direct generation only`,
-    `Limits ${JSON.stringify(child.limits)} · calls ${child.toolCalls} · reason ${child.limitReason ?? "none"}`,
+    `Limits ${JSON.stringify(child.limits)} · ${deadlineLabel(child)} · calls ${child.toolCalls} · reason ${child.limitReason ?? "none"}`,
     "Activity: " + safe(activity(child)),
     "Full transcript: " + safe(child.transcript ?? "unavailable (queued/setup)"),
     "Followup/revive: native delegate_coordinate only (Hub has no tool dispatcher)",

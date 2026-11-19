@@ -4,7 +4,13 @@ import { mkdir, writeFile, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { fixture, eventually } from "./fixtures.ts";
-import { DEFAULT_POLICY, resolveScheduling, validatePolicy } from "../src/scheduling.ts";
+import {
+  DEFAULT_POLICY,
+  narrowLimits,
+  resolveScheduling,
+  tighterLimit,
+  validatePolicy,
+} from "../src/scheduling.ts";
 import type { ChildSnapshot } from "../src/coordinator.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -84,6 +90,90 @@ test("explicit operator budgets override defaults within unchanged ceilings; tru
       await assert.rejects(resolveScheduling(f.root, true, operatorDir), /broadened/);
     }
   }
+});
+
+test("deadline 0 is disabled by default; operators may set 0 or a cap up to 24h; projects and tasks only narrow", async (t) => {
+  assert.equal(DEFAULT_POLICY.deadlineMs, 0);
+  for (const deadlineMs of [0, 1, 1800000, 3600000, 86400000])
+    assert.equal(validatePolicy({ deadlineMs }).deadlineMs, deadlineMs);
+  for (const deadlineMs of [-1, 86400001, 1.5]) assert.throws(() => validatePolicy({ deadlineMs }));
+  const capped = { ...DEFAULT_POLICY, deadlineMs: 60000 };
+  assert.equal(narrowLimits(capped, { deadlineMs: 30000 }).deadlineMs, 30000);
+  assert.throws(() => narrowLimits(capped, { deadlineMs: 0 }), /broadened/);
+  assert.throws(() => narrowLimits(capped, { deadlineMs: 60001 }), /broadened/);
+  assert.equal(narrowLimits(DEFAULT_POLICY, { deadlineMs: 0 }).deadlineMs, 0);
+  assert.equal(narrowLimits(DEFAULT_POLICY, { deadlineMs: 86400000 }).deadlineMs, 86400000);
+  assert.throws(() => narrowLimits(DEFAULT_POLICY, { deadlineMs: 86400001 }), /broadened/);
+  assert.equal(tighterLimit("deadlineMs", 0, 500), 500);
+  assert.equal(tighterLimit("deadlineMs", 700, 0), 700);
+  assert.equal(tighterLimit("deadlineMs", 0, 0), 0);
+  assert.equal(tighterLimit("deadlineMs", 700, 500), 500);
+  assert.equal(tighterLimit("requests", 0, 5), 0);
+
+  const f = await fixture(t);
+  const operatorDir = join(f.root, "operator");
+  await mkdir(join(f.root, ".pi"), { recursive: true });
+  const project = (scheduling: object) =>
+    writeFile(join(f.root, ".pi", "delegation.json"), JSON.stringify({ scheduling }));
+  await configure(f, { scheduling: { deadlineMs: 60000 } });
+  await project({ deadlineMs: 0 });
+  await assert.rejects(resolveScheduling(f.root, true, operatorDir), /broadened/);
+  await project({ deadlineMs: 30000 });
+  assert.equal((await resolveScheduling(f.root, true, operatorDir)).deadlineMs, 30000);
+  await configure(f, { scheduling: {} });
+  assert.equal((await resolveScheduling(f.root, true, operatorDir)).deadlineMs, 30000);
+  await project({ deadlineMs: 0 });
+  assert.equal((await resolveScheduling(f.root, true, operatorDir)).deadlineMs, 0);
+});
+
+test("resume opens a fresh request/tool window and re-arms wrap-up; cumulative counters stay visible", async (t) => {
+  for (const limits of [
+    { requests: 10, tools: 30 },
+    { requests: 10, tools: 3 },
+  ])
+    await t.test(JSON.stringify(limits), async (t) => {
+      let calls = 0;
+      const notices: number[] = [];
+      const wrapUps: number[] = [];
+      const f = await fixture(t, {
+        speed: 0,
+        response: (context) => {
+          if (userText(context) !== "long assignment") return fauxAssistantMessage("captured");
+          calls++;
+          const guidance = context.messages
+            .filter((message) => message.role === "system")
+            .map((message) => message.content)
+            .join("\n");
+          if (guidance.includes("Approaching a delegation budget")) notices.push(calls);
+          if (guidance.includes("Delegation wrap-up")) {
+            wrapUps.push(calls);
+            return fauxAssistantMessage("Partial report");
+          }
+          return fauxAssistantMessage(fauxToolCall("read", { path: "missing.txt" }), {
+            stopReason: "toolUse",
+          });
+        },
+      });
+      const ref = await f.direct("long assignment", "scout", { limits });
+      const first = await f.coordinator.wait(ref);
+      assert.equal(first.status, "settled", JSON.stringify(first));
+      await f.coordinator.resume(ref, "continue");
+      const second = await f.coordinator.wait(ref);
+      assert.equal(second.status, "settled", JSON.stringify(second));
+      assert.equal(second.result, "Partial report");
+      assert.equal(second.window, 2);
+      assert.deepEqual(second.windowStart, {
+        requests: first.telemetry.requests,
+        toolCalls: first.toolCalls,
+      });
+      // Cumulative counters exceed one window's caps: each window was charged separately.
+      assert.equal(second.telemetry.requests, 2 * first.telemetry.requests!);
+      assert.equal(second.toolCalls, 2 * first.toolCalls);
+      assert.ok(second.toolCalls > limits.tools || second.telemetry.requests! > limits.requests);
+      assert.equal(wrapUps.length, 2);
+      assert.equal(wrapUps[1], wrapUps[0] + first.telemetry.requests!);
+      if (limits.tools === 30) assert.deepEqual(notices, [notices[0], notices[0] + 10]);
+    });
 });
 
 test("request wrap-up reports through the last allowed request without starting an extra turn", async (t) => {

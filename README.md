@@ -251,8 +251,8 @@ executes or inherits that parent's router. Profiles without a chain keep existin
 Each failed eligible request gets two same-model retries before advancing. Transient outages
 and exhausted quota/credits are eligible; authentication, permission, invalid requests,
 refusals, tool failures and cancellation are not. Backups remain selected across explicit
-resume until operator reset. Every attempt consumes the same cumulative request budget;
-backoff consumes the current deadline window.
+resume until operator reset. Every attempt consumes the current window's request budget;
+backoff consumes the current deadline window, if one is configured.
 
 An explicit task `model` stays pinned unless `fallback:true` opts into that model's suffix of
 the profile chain. `fallback:false` disables chaining. Task `models` can remove destinations,
@@ -265,11 +265,12 @@ no budgets or deadline. An exhausted failed child requires this operator action 
 explicit resume; model-facing tools cannot reset routing. No state survives parent shutdown.
 See [configuration, safety and diagnostics](docs/advanced-policies.md#profile-owned-fallback-chains).
 
-Default task limits are **30 minutes**, **200 direct model requests** and **500 tool calls**:
+Default task limits are **no deadline**, **200 direct model requests** and **500 tool calls** per execution window:
 
-- These are hard caps. Before reaching them, a subagent can use reserved capacity to report partial findings or submit a structured result instead of starting new work. Wrap-up does not add capacity or guarantee a result. Trusted project and per-task limits can still only narrow the applicable budgets.
-- A deadline pauses the active subtree after tool/provider drain, releasing capacity but retaining sessions and conversations.
-- Use `subagent` resume or root-only `delegate_coordinate` `{action:"resume",target:{id,generation},assignment:"Continue…"}` to continue the same identity and conversation. Only the deadline resets; request/tool/spawn counters remain cumulative (at most 64 windows per generation). Completed windows retain earlier result/artifact evidence in `completedWindows`; a resumed completed structured assignment requires a new `submit_result`.
+- Operator `scheduling.deadlineMs` in `~/.pi/agent/delegation.json` may set a positive per-window deadline (up to 24 hours); `0`, the default, disables it. A trusted project or a task's `limits.deadlineMs` can set or shorten a deadline but cannot disable an operator's deadline.
+- Requests and tools are hard caps. Before reaching them, a subagent can use reserved capacity to report partial findings or submit a structured result instead of starting new work. Wrap-up does not add capacity or guarantee a result. Trusted project and per-task limits can still only narrow the applicable budgets.
+- A configured deadline pauses the active subtree after tool/provider drain, releasing capacity but retaining sessions and conversations.
+- Use `subagent` resume or root-only `delegate_coordinate` `{action:"resume",target:{id,generation},assignment:"Continue…"}` to continue the same identity and conversation. Each resume starts a fresh window: a fresh deadline (if configured) and fresh request/tool budgets. Snapshot request/tool counters stay cumulative, `windowStart` records where the current window began, and spawn counts remain cumulative (at most 64 windows per generation). Completed windows retain earlier result/artifact evidence in `completedWindows`; a resumed completed structured assignment requires a new `submit_result`.
 - Resume the parent first, then explicitly selected children. Descendants never resume automatically.
 - Stop, shutdown and hard request/tool limits cancel and dispose. Unresponsive code must drain before pause or cancellation can release resources.
 

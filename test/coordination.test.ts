@@ -208,6 +208,26 @@ test("operator/project/request coordination grants only narrow, including descen
   assert.match(await readFile(parent.transcript!, "utf8"), /broaden ancestor grants/);
 });
 
+test("followup adopts a newly configured deadline over a disabled one and keeps a previous cap under a disabled policy", async (t) => {
+  const f = await fixture(t, { speed: 0, response });
+  const renew = async (target: ChildRef, assignment: string) => {
+    const result = await control(f, { action: "followup", target, assignment });
+    assert.equal(result.isError, false, JSON.stringify(result));
+    return final(f, result.details as ChildSnapshot);
+  };
+  await f.session.prompt('LAUNCH {"assignment":"first","profile":"general","background":false}');
+  const first = f.events.filter((event) => event.child.disposed).at(-1)!.child;
+  assert.equal(first.limits.deadlineMs, 0);
+  await config(f, { scheduling: { deadlineMs: 60000 } });
+  const second = await renew(first, "capped");
+  assert.equal(second.generation, 2);
+  assert.equal(second.limits.deadlineMs, 60000);
+  await config(f, {});
+  const third = await renew(second, "still capped");
+  assert.equal(third.generation, 3);
+  assert.equal(third.limits.deadlineMs, 60000);
+});
+
 test("idle followup and park/revive use monotonic fresh generations, immutable artifacts and fresh submissions", async (t) => {
   const f = await fixture(t, { speed: 0, response });
   await config(f, { general: { coordination: ["inbox"] } });
