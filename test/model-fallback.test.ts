@@ -164,7 +164,7 @@ test("invalid chain permissions/prewalk and project reordering reject before adm
   assert.equal(narrowModelPolicy(base, { fallback: false }, false).fallback, undefined);
 });
 
-test("deadline cancels quota backoff; retained resume keeps target and cumulative request budget", async (t) => {
+test("deadline cancels quota backoff; retained resume keeps target and opens a fresh request window", async (t) => {
   const { root, runtime, direct, coordinator } = await fixture(t);
   const { primary, backup } = providers(runtime);
   primary.setResponses([
@@ -189,7 +189,7 @@ test("deadline cancels quota backoff; retained resume keeps target and cumulativ
   assert.equal(state.telemetry.requests, 2);
   assert.equal(state.model.provider, a.provider);
   assert.equal(backup.state.callCount, 0);
-  await assert.rejects(coordinator.resume(ref, "no replenished budget"), /budget exhausted/);
+  assert.deepEqual(state.windowStart, { requests: 1, toolCalls: 0 });
 });
 
 test("exhaustion never wraps; operator reset retains failed-window evidence and cumulative limits", async (t) => {
@@ -816,7 +816,7 @@ test("paused operator reset admits a newly available authorized physical provide
   assert.equal(state.effort, "off");
 });
 
-test("failed resume admission does not commit an availability-based route change or replenish budgets", async (t) => {
+test("failed resume admission does not commit an availability-based route change or a budget window", async (t) => {
   const { root, runtime, direct, coordinator } = await fixture(t);
   const { primary, backup } = providers(runtime);
   primary.setResponses([fauxAssistantMessage("complete at budget")]);
@@ -826,9 +826,10 @@ test("failed resume admission does not commit an availability-based route change
   });
   const original = await coordinator.wait(ref);
   runtime.unregisterProvider(a.provider);
+  await configure(root, { tools: [], models: [a, b], fallback: [a, b] });
   await assert.rejects(
-    coordinator.resume(ref, "no budget for newly available suffix"),
-    /budget exhausted/,
+    coordinator.resume(ref, "revoked after newly available suffix"),
+    /tools grant revoked/,
   );
   assert.deepEqual(coordinator.snapshot(ref), original);
   assert.equal(backup.state.callCount, 0);

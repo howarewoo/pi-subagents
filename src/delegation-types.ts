@@ -43,6 +43,8 @@ export type ChildSnapshot = Readonly<
     pauseReason?: string;
     retainedContext?: boolean;
     window?: number;
+    /** Cumulative request/tool counts when this window began; budgets apply per window. */
+    windowStart?: { requests: number; toolCalls: number };
     /** Immutable completion evidence from earlier windows of this same conversation. */
     completedWindows?: ReadonlyArray<
       Pick<

@@ -126,7 +126,71 @@ test(
     assert.match(actual, /remember this assistant instruction/);
     assert.match(actual, /remember this tool result|aborted/i);
     assert.match(actual, /finish/);
-    assert.equal(DEFAULT_POLICY.deadlineMs, 1800000);
+    assert.equal(DEFAULT_POLICY.deadlineMs, 0);
+  },
+);
+
+test(
+  "default policy never pauses for elapsed time; tasks may set a cap but cannot broaden an operator cap",
+  { timeout: 10000 },
+  async (t) => {
+    let release!: () => void;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await fixture(t, {
+      speed: 0,
+      extra: (pi) => {
+        pi.on("tool_call", async (event) => {
+          if (event.toolName === "read") {
+            markEntered();
+            await gate;
+          }
+        });
+      },
+      response: (context) =>
+        userText(context) === "long" && context.messages.at(-1)?.role !== "toolResult"
+          ? fauxAssistantMessage(fauxToolCall("read", { path: "input.txt" }), {
+              stopReason: "toolUse",
+            })
+          : fauxAssistantMessage("done"),
+    });
+    await writeFile(join(f.root, "input.txt"), "data");
+    // Capture the fixture context with real timers, then mock admission/elapsed time.
+    await f.coordinator.wait(await f.direct("warm up"));
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const ref = await f.direct("long");
+    assert.equal(f.coordinator.snapshot(ref)!.limits.deadlineMs, 0);
+    await entered;
+    t.mock.timers.tick(25 * 60 * 60 * 1000);
+    t.mock.timers.reset();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(f.coordinator.snapshot(ref)!.status, "running");
+    release();
+    const done = await f.coordinator.wait(ref);
+    assert.equal(done.status, "settled");
+    assert.equal(done.pauseReason, undefined);
+    assert.equal(
+      f.events.some((event) => event.child.id === ref.id && event.child.status === "pausing"),
+      false,
+    );
+    // A positive task cap narrows a disabled deadline; it cannot exceed an operator cap.
+    const capped = await f.direct("warm up", "general", { limits: { deadlineMs: 5000 } });
+    assert.equal(f.coordinator.snapshot(capped)!.limits.deadlineMs, 5000);
+    await f.coordinator.wait(capped);
+    f.coordinator.configure({ ...DEFAULT_POLICY, deadlineMs: 1000 });
+    await assert.rejects(
+      f.direct("broaden", "general", { limits: { deadlineMs: 2000 } }),
+      /broadened limit: deadlineMs/,
+    );
+    await assert.rejects(
+      f.direct("disable", "general", { limits: { deadlineMs: 0 } }),
+      /broadened limit: deadlineMs/,
+    );
   },
 );
 

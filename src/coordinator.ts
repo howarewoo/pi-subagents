@@ -25,6 +25,7 @@ import {
   DEFAULT_POLICY,
   resolveScheduling,
   narrowLimits,
+  tighterLimit,
   validatePolicy,
   type ExecutionLimits,
   type SchedulingPolicy,
@@ -490,7 +491,7 @@ export class DelegationCoordinator {
       if (input.parent) {
         const inherited = this.entry(input.parent).state.limits;
         for (const key of Object.keys(maximum) as (keyof ExecutionLimits)[])
-          maximum[key] = Math.min(maximum[key], inherited[key]);
+          maximum[key] = tighterLimit(key, maximum[key], inherited[key]);
       }
       return narrowLimits(maximum, input.limits ?? {});
     });
@@ -590,11 +591,11 @@ export class DelegationCoordinator {
       this.queue.add(entry);
       this.presence.set(entry.state.id, "active");
     }
-    for (const entry of entries) {
-      entry.timer = setTimeout(() => {
-        this.limit(entry, "deadline");
-      }, entry.state.limits.deadlineMs);
-    }
+    for (const entry of entries)
+      if (entry.state.limits.deadlineMs)
+        entry.timer = setTimeout(() => {
+          this.limit(entry, "deadline");
+        }, entry.state.limits.deadlineMs);
     for (const entry of entries) if (!entry.state.disposed) this.update(entry, {});
     this.pump();
     return entries.map((entry) => ({ id: entry.state.id, generation: entry.state.generation }));
@@ -624,6 +625,12 @@ export class DelegationCoordinator {
       previous.state.prewalk && ["handed-off", "no-op"].includes(previous.state.prewalk.status)
         ? previous.state.prewalk.target
         : previous.input.model;
+    const limits: Partial<ExecutionLimits> = narrowLimits(
+      previous.state.limits,
+      input.limits ?? {},
+    );
+    // A disabled previous deadline adopts the current cap (0 is "no cap", not a narrower value).
+    if (!limits.deadlineMs) delete limits.deadlineMs;
     const next = (
       await this.admit(
         [
@@ -635,7 +642,7 @@ export class DelegationCoordinator {
             skills: input.skills.filter((skill) => profile.skills.includes(skill.filePath)),
             resultSchema:
               input.resultSchema === undefined ? previous.input.resultSchema : input.resultSchema,
-            limits: narrowLimits(previous.state.limits, input.limits ?? {}),
+            limits,
           },
         ],
         ref,
@@ -920,10 +927,10 @@ export class DelegationCoordinator {
       assertResumable();
       const limits = { ...entry.state.limits };
       for (const key of Object.keys(limits) as (keyof ExecutionLimits)[])
-        limits[key] = Math.min(
-          limits[key],
-          policy[key],
-          parent ? this.entry(parent).state.limits[key] : Infinity,
+        limits[key] = tighterLimit(
+          key,
+          tighterLimit(key, limits[key], policy[key]),
+          parent ? this.entry(parent).state.limits[key] : limits[key],
         );
       let current: Entry | undefined = entry;
       let descendant: Entry | undefined;
@@ -1001,12 +1008,8 @@ export class DelegationCoordinator {
             throw new Error(`Resume denied: leaf capability revoked or reclassified: ${name}`);
         }
       }
-      if (
-        (entry.state.telemetry.requests ?? 0) >=
-          Math.min(limits.requests, entry.wrapUp?.requestCeiling ?? limits.requests) ||
-        entry.state.toolCalls >= limits.tools ||
-        entry.spawned > limits.spawns
-      )
+      // Requests/tools restart per window below; spawns remain cumulative per generation.
+      if (entry.spawned > limits.spawns)
         throw new Error("Resume denied: cumulative execution budget exhausted");
       if (entry.state.depth > limits.depth)
         throw new Error("Resume denied: delegation depth limit");
@@ -1064,6 +1067,8 @@ export class DelegationCoordinator {
       });
       entry.paused = false;
       entry.fallbackReset = false;
+      entry.wrapUp = undefined;
+      entry.budgetNoticeSent = false;
       this.presence.set(entry.state.id, "active");
       entry.pauseDrain = undefined;
       entry.resumeText =
@@ -1076,12 +1081,17 @@ export class DelegationCoordinator {
         error: undefined,
         limits,
         window: (entry.state.window ?? 1) + 1,
+        windowStart: {
+          requests: entry.state.telemetry.requests ?? 0,
+          toolCalls: entry.state.toolCalls,
+        },
         activity: "Continuation queued for admission",
       });
       const window = entry.state.window;
-      entry.timer = setTimeout(() => {
-        if (entry.state.window === window) this.limit(entry, "deadline");
-      }, limits.deadlineMs);
+      if (limits.deadlineMs)
+        entry.timer = setTimeout(() => {
+          if (entry.state.window === window) this.limit(entry, "deadline");
+        }, limits.deadlineMs);
       this.pump();
       return { id: ref.id, generation: ref.generation };
     } finally {
@@ -1106,16 +1116,25 @@ export class DelegationCoordinator {
     });
     void this.stop(entry.state);
   }
+  /** Requests/tools charged in the current window; snapshot counters stay cumulative. */
+  private windowUsage(entry: Entry): { requests: number; toolCalls: number } {
+    const { telemetry, toolCalls, windowStart } = entry.state;
+    return {
+      requests: (telemetry.requests ?? 0) - (windowStart?.requests ?? 0),
+      toolCalls: toolCalls - (windowStart?.toolCalls ?? 0),
+    };
+  }
   private atToolReserve(entry: Entry): boolean {
-    const { limits, toolCalls } = entry.state;
+    const { limits } = entry.state;
+    const { toolCalls } = this.windowUsage(entry);
     // A one-call prose task can still run its only tool. Structured tasks need
     // that slot for submission, even if the caller grants only one tool call.
     const reserved = limits.tools > 1 || !!entry.validator ? 1 : 0;
     return toolCalls >= limits.tools - reserved;
   }
   private budgetGuidance(entry: Entry): string | undefined {
-    const { limits, telemetry, toolCalls, outcome } = entry.state;
-    const requests = telemetry.requests ?? 0;
+    const { limits, outcome } = entry.state;
+    const { requests, toolCalls } = this.windowUsage(entry);
     const requestsLeft = limits.requests - requests;
     if (requestsLeft <= 0) return;
     const toolsLeft = limits.tools - toolCalls;
@@ -1150,7 +1169,7 @@ export class DelegationCoordinator {
   private chargeToolCall(entry: Entry, name: string): void {
     if (name !== "submit_result" && entry.wrapUp)
       throw new Error("Delegation wrap-up: tool calls are reserved for reporting");
-    if (entry.state.toolCalls >= entry.state.limits.tools) {
+    if (this.windowUsage(entry).toolCalls >= entry.state.limits.tools) {
       this.limit(entry, "tools");
       throw new Error("Tool call limit");
     }
@@ -1257,7 +1276,7 @@ export class DelegationCoordinator {
       effort: entry.state.effort as ModelSelection["effort"],
     });
     if (entry.cancelled || entry.paused || this.closing) throw new Error("Delegation cancelled");
-    const requests = entry.state.telemetry.requests ?? 0;
+    const { requests } = this.windowUsage(entry);
     if (requests >= entry.state.limits.requests) {
       this.limit(entry, "requests");
       throw new Error("Direct request limit");
@@ -1266,7 +1285,8 @@ export class DelegationCoordinator {
       this.limit(entry, entry.wrapUp.reason, "reserved reporting requests exhausted");
       throw new Error("Delegation wrap-up request limit");
     }
-    this.update(entry, { telemetry: { ...entry.state.telemetry, requests: requests + 1 } });
+    const telemetry = entry.state.telemetry;
+    this.update(entry, { telemetry: { ...telemetry, requests: (telemetry.requests ?? 0) + 1 } });
   }
   private observeExecutionMessage(entry: Entry, text: string): void {
     for (const message of this.coordinationMessages)

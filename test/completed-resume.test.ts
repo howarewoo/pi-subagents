@@ -21,7 +21,7 @@ const latestUser = (context: Parameters<FauxResponseFactory>[0]) => {
         .join("") ?? "");
 };
 
-test("completed restoration preserves exact SDK entry context, transcript, evidence and cumulative budgets", async (t) => {
+test("completed restoration preserves exact SDK entry context, transcript, evidence and per-window budgets", async (t) => {
   const contexts: Parameters<FauxResponseFactory>[0][] = [];
   const f = await fixture(t, {
     speed: 0,
@@ -59,8 +59,13 @@ test("completed restoration preserves exact SDK entry context, transcript, evide
   const before = f.coordinator.snapshot(ref);
   assert.equal(before!.completedWindows!.length, 2);
   assert.equal(before!.telemetry.requests, 4);
-  await assert.rejects(f.coordinator.resume(ref, "exhausted"), /cumulative.*budget/);
-  assert.deepEqual(f.coordinator.snapshot(ref), before);
+  // Each resume opens a fresh request/tool window; cumulative counters stay visible.
+  await f.coordinator.resume(ref, "fresh window");
+  const after = await f.coordinator.wait(ref);
+  assert.equal(after.status, "settled", JSON.stringify(after));
+  assert.equal(after.window, 4);
+  assert.equal(after.telemetry.requests, 5);
+  assert.deepEqual(after.windowStart, { requests: 4, toolCalls: 1 });
   assert.equal(
     JSON.stringify(f.coordinator.reopenTranscript(ref).messages),
     JSON.stringify(f.coordinator.messages(ref)),
