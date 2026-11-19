@@ -32,6 +32,7 @@ export async function fixture(
     tokenSize?: { min: number; max: number };
     extra?: ExtensionFactory;
     response?: FauxResponseFactory;
+    contextWindow?: number;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "delegation-test-"));
@@ -41,6 +42,9 @@ export async function fixture(
     provider: "delegation-controlled",
     tokensPerSecond: options.speed ?? 10000,
     tokenSize: options.tokenSize ?? { min: 1, max: 1 },
+    ...(options.contextWindow
+      ? { models: [{ id: "controlled", contextWindow: options.contextWindow }] }
+      : {}),
   });
   const respond: FauxResponseFactory = (context, opts, state, selected) => {
     model.appendResponses([respond]);

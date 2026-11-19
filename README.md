@@ -247,6 +247,9 @@ Configure `models` as permission grants and a separate ordered `fallback` array 
 in `delegation.json`. The chain starts at its own first available authorized physical target,
 regardless of the parent's model, including when the parent selects a virtual model. It never
 executes or inherits that parent's router. Profiles without a chain keep existing routing.
+Every child, with or without a chain, retries a transient provider error twice on the same
+model and automatically compacts its own context when it fills; each retry and summary
+request consumes the request budget.
 
 Each failed eligible request gets two same-model retries before advancing. Transient outages
 and exhausted quota/credits are eligible; authentication, permission, invalid requests,

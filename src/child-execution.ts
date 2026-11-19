@@ -73,6 +73,15 @@ export interface ExecutionOwner {
   dispose(): void;
 }
 
+/** Window-relative: a summary request may not leave fewer than the largest report reserve. */
+export function compactionWouldSpendReserve(
+  entry: Pick<ExecutionRecord, "state" | "wrapUp">,
+): boolean {
+  const { limits, telemetry, windowStart } = entry.state;
+  const used = (telemetry.requests ?? 0) - (windowStart?.requests ?? 0);
+  return !!entry.wrapUp || limits.requests - used <= 2;
+}
+
 export function childResources(prompt: string, skills: Skill[] = []): ResourceLoader {
   const extensions = { extensions: [], errors: [], runtime: createExtensionRuntime() };
   return {
@@ -124,13 +133,12 @@ export async function createChildExecution(
     let pendingAttempt: number | undefined;
     let recoveryPrepared = false;
     entry.recoveryAbort = new AbortController();
+    let compacting = false;
+    // Pi default compaction thresholds; summaries use the same counted parent runtime.
+    // Same-model native retry applies to every child; provider-level retry stays off.
     const settings = SettingsManager.inMemory({
-      compaction: { enabled: false },
-      retry: {
-        enabled: !!entry.state.fallback,
-        maxRetries: FALLBACK_RETRIES,
-        provider: { maxRetries: 0 },
-      },
+      compaction: { enabled: true },
+      retry: { enabled: true, maxRetries: FALLBACK_RETRIES, provider: { maxRetries: 0 } },
     });
     const waitForRetry = async (failures: number) => {
       await delay(Math.min(60000, 2000 * 2 ** Math.max(0, failures - 1)), undefined, {
@@ -176,10 +184,15 @@ export async function createChildExecution(
     });
     const onRequest = async () => {
       if (policyError) throw new Error(policyError);
+      // A summary request must never spend the wrap-up report reserve (at most two requests)
+      // or hit a hard cap. Refusing fails only the compaction; the context stays uncompacted.
+      if (compacting && compactionWouldSpendReserve(entry))
+        throw new Error("Compaction suppressed: delegation report reserve");
       if (entry.state.fallback) await owner.revalidateFallback();
       await owner.revalidateModel(effective(), entry.state.prewalk?.status === "armed");
       owner.chargeRequest();
-      if (entry.state.fallback) {
+      // Summary requests are budgeted but are not conversation attempts on the chain.
+      if (entry.state.fallback && !compacting) {
         pendingAttempt = entry.state.fallback.attempts.length;
         owner.update({
           fallback: {
@@ -609,6 +622,8 @@ export async function createChildExecution(
     let markStarted = () => {};
     entry.unsubscribe = session.subscribe((event) => {
       const patch: { -readonly [K in keyof ChildSnapshot]?: ChildSnapshot[K] } = {};
+      if (event.type === "compaction_start") compacting = true;
+      if (event.type === "compaction_end") compacting = false;
       if (event.type === "agent_start") {
         patch.status = entry.cancelled ? "draining" : entry.paused ? "pausing" : "running";
         markStarted();
