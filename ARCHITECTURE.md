@@ -65,7 +65,7 @@ On `session_start`, the entrypoint creates one `DelegationCoordinator` using the
 Three model-facing tools share that coordinator:
 
 - **`delegate_task`** accepts one assignment or an ordered batch, with explicit profiles, optional checked task files, narrowed grants, limits, and optional result schemas. Foreground is the default.
-- **`delegate_coordinate`** provides live messaging, bounded waits, status, stop, park, and fresh-generation follow-up or revival. Child access is separately granted and restricted.
+- **`delegate_coordinate`** provides live messaging, bounded waits, status, stop, park, fresh-generation follow-up or revival, and root-only fallback-chain reset (`reset_fallback`). Child access is separately granted and restricted.
 - **`subagent`** is a compatibility adapter, not a second executor. It maps `worker` to `implementation`, normalizes requests into the existing delegation path, and exposes identities as `UUID@generation`. Launches are asynchronous by default and wake the parent after drain.
 
 Commands `/subagent-profiles` (Subagent Profiles), `/subagent-stop`, and `/subagent-hub` expose profile information and the same registry to the operator. Outside the TUI, `/subagent-hub` prints the registry list. Steering uses the Hub's thread-column composer; per-identity status and fallback reset are orchestrator tool actions. The former `/task-*`, `/agent-hub`, `/subagent-status`, `/subagent-steer` and `/subagent-fallback-reset` commands are not registered as aliases. Follow-up and revival are model-tool operations, not direct Hub actions.
