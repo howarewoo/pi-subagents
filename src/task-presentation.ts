@@ -14,6 +14,11 @@ export const agentLabel = (child: ChildSnapshot) =>
 export const deadlineLabel = ({ limits }: ChildSnapshot) =>
   limits.deadlineMs ? `deadline ${limits.deadlineMs}ms per window` : "no deadline";
 export const active = (child: ChildSnapshot) => !child.disposed && child.status !== "paused";
+const partialKind = (child: ChildSnapshot) =>
+  child.status === "paused" ? "paused before a final answer" : "budget wrap-up report";
+/** Bounded one-line partial marker; paused windows preview their last assistant text. */
+const partialLine = (child: ChildSnapshot) =>
+  `Partial: ${partialKind(child)}${child.status === "paused" ? ` · last text: ${child.partialText ? truncateToWidth(lineText(child.partialText), 240, "… [preview truncated]") : "none yet"}` : ""}`;
 export const activity = (child: ChildSnapshot) =>
   (child.status === "paused"
     ? `Paused: ${child.pauseReason ?? "deadline"} · context ${child.retainedContext ? "retained" : "not yet available"} · resume via model or stop in Hub`
@@ -89,6 +94,7 @@ export function taskCard(child: ChildSnapshot | undefined, expanded = false): st
         : child.error
           ? [`Error: ${truncateToWidth(lineText(child.error), 240, "… [preview truncated]")}`]
           : []),
+      ...(child.partial ? [partialLine(child)] : []),
     ].map(lineText);
   return [
     headline,
@@ -113,6 +119,7 @@ export function taskCard(child: ChildSnapshot | undefined, expanded = false): st
           `Pause: ${child.pauseReason} · context ${child.retainedContext ? "retained" : "not yet available"} · resume via model control after drain`,
         ]
       : []),
+    ...(child.partial ? [partialLine(child)] : []),
     `Window ${child.window ?? 1} · requests ${(child.telemetry.requests ?? 0) - (child.windowStart?.requests ?? 0)}/${child.limits.requests} · tools ${child.toolCalls - (child.windowStart?.toolCalls ?? 0)}/${child.limits.tools} · ${deadlineLabel(child)} · cumulative requests ${child.telemetry.requests ?? 0} · tools ${child.toolCalls} · spawns ${child.spawned ?? 0}/${child.limits.spawns}`,
     ...(child.artifacts ? [`Artifacts: ${JSON.stringify(child.artifacts)}`] : []),
     "Assignment: " + truncateToWidth(lineText(child.assignment), 480, "… [preview truncated]"),
@@ -181,6 +188,15 @@ export function taskDetails(
     "Result",
     safe(child.result || "Not available yet"),
     "",
+    ...(child.partial
+      ? [
+          `Partial (${partialKind(child)})`,
+          ...(child.status === "paused"
+            ? [safe(child.partialText || "No assistant text yet")]
+            : []),
+          "",
+        ]
+      : []),
     ...(child.error ? ["Error", safe(child.error), ""] : []),
     ...(child.outcome ? ["Structured outcome", JSON.stringify(child.outcome, null, 2), ""] : []),
     ...(child.artifacts ? ["Saved artifacts", JSON.stringify(child.artifacts, null, 2), ""] : []),

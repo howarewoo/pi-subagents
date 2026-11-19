@@ -13,7 +13,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
-import { resultValidator } from "./outcomes.ts";
+import { clippedText, resultValidator } from "./outcomes.ts";
 import {
   allowsModel,
   sameSelection,
@@ -722,8 +722,21 @@ export class DelegationCoordinator {
       ]).then(() => {
         if (entry.cancelled || this.closing || entry.state.disposed) return;
         this.presence.set(entry.state.id, "paused");
+        const partialText = entry.session?.messages
+          .filter((message) => message.role === "assistant")
+          .map((message) =>
+            message.content
+              .filter((block) => block.type === "text")
+              .map((block) => block.text)
+              .join("")
+              .trim(),
+          )
+          .filter(Boolean)
+          .at(-1);
         this.update(entry, {
           status: "paused",
+          partial: true,
+          partialText: partialText && clippedText(partialText),
           writerLease: false,
           retainedContext: !!entry.session,
           activity: "Paused; explicitly resume to continue retained conversation",
@@ -1078,6 +1091,8 @@ export class DelegationCoordinator {
       this.update(entry, {
         status: "queued",
         pauseReason: undefined,
+        partial: undefined,
+        partialText: undefined,
         error: undefined,
         limits,
         window: (entry.state.window ?? 1) + 1,

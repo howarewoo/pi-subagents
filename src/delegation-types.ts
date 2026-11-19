@@ -41,6 +41,10 @@ export type ChildSnapshot = Readonly<
     toolCalls: number;
     spawned?: number;
     pauseReason?: string;
+    /** This window ended before a final answer: paused, or settled with a budget wrap-up report. */
+    partial?: boolean;
+    /** Bounded preview of the last assistant text available when a window paused. */
+    partialText?: string;
     retainedContext?: boolean;
     window?: number;
     /** Cumulative request/tool counts when this window began; budgets apply per window. */
