@@ -234,7 +234,7 @@ function deferred() {
 test("editable Inspector commits Enter/blur once to original profile, native multiline submits, Escape cancels unfinished input only", async (t) => {
   const f = await inspector(t);
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "j/k 路径 é 👩‍💻", "\t", "down", "\t");
   assert.match(f.render(), /scout/);
   await f.controller.settled();
@@ -242,11 +242,11 @@ test("editable Inspector commits Enter/blur once to original profile, native mul
   assert.equal((await f.disk()).scout, undefined);
   f.input("\t", "up", "\t");
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "not committed", "\x1b");
   assert.equal((await f.disk()).general.description, "j/k 路径 é 👩‍💻");
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "\x1b[200~Multiline\nUnicode j/k 路径\x1b[201~", "\r", "\t");
   await f.controller.settled();
   assert.equal((await f.disk()).general.prompt, "Multiline\nUnicode j/k 路径");
@@ -283,7 +283,7 @@ test("catalog inside persistent rail discloses atomic Add/grant, supports depend
   assert.equal(f.controller.pending.length, 2);
   f.input("\t", "down", "down", "\t");
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "cross-profile", "\r");
   assert.equal(f.controller.pending.at(-1)!.profile, "review");
   assert.match(f.render(), /pending|Pending/);
@@ -337,7 +337,7 @@ test("immediate permissions, exact skills/leaf grants and dependent grant remova
   f.input("1");
   f.setMetadata({ entries: [], error: "Metadata unavailable" });
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "unrelated", "\r");
   await f.controller.settled();
   assert.equal((await f.disk()).general.description, "unrelated");
@@ -359,7 +359,7 @@ test("failure retains attempted field, cancels drain permanently, browsing remai
     return open(...args);
   });
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "attempted", "\r");
   f.input("\x1b");
   await f.controller.settled();
@@ -375,7 +375,7 @@ test("failure retains attempted field, cancels drain permanently, browsing remai
   assert.equal((await f.disk()).general.description, "attempted");
   await fs.writeFile(f.projectPath, JSON.stringify({ review: { description: "external" } }));
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "abandon", "\r");
   await f.controller.settled();
   assert.equal(f.controller.status, "reload-required");
@@ -391,7 +391,7 @@ test("failure retains attempted field, cancels drain permanently, browsing remai
 test("wide/narrow/short/tiny and paint retain focus/state, no hidden action activation; j/k stay printable inside native input", async (t) => {
   const f = await inspector(t);
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "jkjk");
   for (const [w, h] of [
     [120, 36],
@@ -461,10 +461,10 @@ test("Project-local profile under Global stays browsable with explicit Project s
   );
   assert.match(f.render(), /Project-local/);
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   assert.equal(f.controller.pending.length, 0);
   assert.equal((await f.disk()).customProfiles, undefined);
-  f.activate("Change destination explicitly");
+  f.activate("Change destination");
   assert.deepEqual(f.exit().result, { action: "destination", profile: "local" });
 });
 
@@ -977,8 +977,8 @@ test("resize Escape cancels hidden single-line/multiline/catalog input before na
     return rename(...args);
   });
   for (const [setting, field] of [
-    ["Description", "Description"],
-    ["Instructions", "Instructions (prompt)"],
+    ["Description", "Edit description"],
+    ["Instructions", "Edit instructions (prompt)"],
     ["Models", "Add to chain / Add and grant"],
   ]) {
     f.open(setting);
@@ -1001,10 +1001,10 @@ test("resize Escape cancels hidden single-line/multiline/catalog input before na
 test("empty description and multiline prompt remain valid explicit item commits", async (t) => {
   const f = await inspector(t);
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "\r");
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "\r");
   await f.controller.settled();
   assert.equal(f.controller.status, "saved");
@@ -1065,7 +1065,7 @@ test("same-friendly-name unavailable saved routes retain exact selected-target i
     return open(...args);
   });
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("replacement instructions", "\r");
   await f.controller.settled();
   f.input("\t", "down", "\t");
@@ -1128,7 +1128,7 @@ test("paused mutations still allow read-only nested target and delegation inspec
     return open(...args);
   });
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "Pending description", "\r");
   await f.controller.settled();
   assert.equal(f.controller.status, "not-saved");
@@ -1311,7 +1311,7 @@ test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across pro
     return rename(...args);
   });
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "ab cd", ctrlLeft, "X");
   assert.equal(f.controller.pending.length, 0);
   f.input("\t"); // Existing single-line blur commit, exactly once.
@@ -1326,7 +1326,7 @@ test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across pro
   assert.equal(f.controller.pending.length, 0);
   f.input("\x1b");
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "draft one two", ctrlLeft, "X");
   assert.equal(f.exit().exited, false);
   f.input("\t", "down"); // Suspend, then browse scout in the rail.
@@ -1336,7 +1336,7 @@ test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across pro
   assert.match(output, /Resume Global general\.prompt draft/);
   assert.equal(f.controller.pending.length, 0);
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "scout abandoned", "\x1b"); // Cancels only scout's active buffer.
   assert.match(f.render(), /Resume Global general\.prompt draft/);
   assert.doesNotMatch(f.render(), /scout\.prompt/);
@@ -1356,7 +1356,7 @@ test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across pro
   assert.doesNotMatch(f.render(), /unsaved draft|Resume Global/);
   // Opening without changing creates no draft or exit prompt.
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\t", "\t", "\x1b", "\x1b");
   assert.equal(f.exit().exited, true);
 });
@@ -1376,12 +1376,12 @@ test("an earlier save failure retains another draft; repeated failures, Retry an
   });
   f.input("\t", "down", "\t");
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "scout change", "\r");
   assert.equal(f.controller.pending.length, 1);
   f.input("\t", "up", "\t");
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "general draft");
   f.resize(72, 21); // Recovery + Resume + Reload disposition at physical 80×24 baseline.
   gate.resolve();
@@ -1413,7 +1413,7 @@ test("an earlier save failure retains another draft; repeated failures, Retry an
   fail = false;
   await fs.writeFile(f.projectPath, JSON.stringify({ review: { description: "external" } }));
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "conflicted", "\r");
   await f.controller.settled();
   assert.equal(f.controller.status, "reload-required");
@@ -1444,7 +1444,7 @@ test("close, destination, structural and field reset ask keep-or-discard for own
   const f = await inspector(t);
   const draft = () => {
     f.open("Instructions");
-    f.activate("Instructions (prompt)");
+    f.activate("Edit instructions (prompt)");
     f.input("\x01", "\x0b", "keep me", "\t", "\t");
   };
   draft();
@@ -1478,7 +1478,7 @@ test("close, destination, structural and field reset ask keep-or-discard for own
   assert.match(f.render(), /Structural transaction would discard 1 unsaved draft/);
   f.input("\r");
   assert.equal(f.exit().exited, false);
-  f.activate("Change destination explicitly");
+  f.activate("Change destination");
   assert.match(f.render(), /Change destination would discard 1 unsaved draft/);
   f.activate("Discard 1 draft and continue: Change destination");
   assert.deepEqual(f.exit(), {
@@ -1492,7 +1492,7 @@ test("physical 80×24 overlay keeps draft decision usable; subminimum resize pre
   const f = await inspector(t);
   f.resize(72, 21);
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "baseline draft");
   const footer = f.render().split("\n").at(-2)!;
   assert.match(footer, /enter: commit · Tab: keep draft · escape\/ctrl\+c: discard text/);
@@ -1520,7 +1520,7 @@ test("physical 80×24 overlay keeps draft decision usable; subminimum resize pre
 test("trust loss keeps an active Project draft readable without enqueueing or reading untrusted layers", async (t) => {
   const f = await inspector(t, undefined, {}, "project");
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "project draft");
   f.setTrusted(false);
   f.input("\r");
@@ -1545,7 +1545,7 @@ test("successful Retry keeps an interrupted invalid exact entry and never enqueu
     return open(...args);
   });
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "accepted", "\r");
   f.input("\t", "down", "\t");
   f.open("Skills");
@@ -1583,11 +1583,11 @@ test("frozen multiline native submit preserves exact whitespace; confirmed draft
   const f = await inspector(t);
   const reload = t.mock.method(f.controller, "reload");
   f.open("Instructions");
-  f.activate("Instructions (prompt)");
+  f.activate("Edit instructions (prompt)");
   f.input("\x01", "\x0b", "  exact buffer  ", "\t", "\t");
   await fs.writeFile(f.projectPath, JSON.stringify({ review: { description: "external" } }));
   f.open("Description");
-  f.activate("Description");
+  f.activate("Edit description");
   f.input("\x05", "\x15", "conflicted", "\r");
   await f.controller.settled();
   assert.equal(f.controller.status, "reload-required");
@@ -1608,7 +1608,7 @@ test("frozen multiline native submit preserves exact whitespace; confirmed draft
   assert.equal(f.controller.status, "read-only");
   assert.equal(f.controller.pending.length, 0);
   assert.doesNotMatch(f.render(), /Resume Global|unsaved draft/);
-  f.activate("Close · finish verified saves first");
+  f.activate("Close");
   assert.equal(f.exit().exited, true);
 });
 
@@ -1721,9 +1721,12 @@ test("checkbox Space is a once-only autosave alias; contextual hints and configu
   assert.deepEqual((await f.disk()).general.tools, ["read"]);
   f.input("down", "up");
   assert.equal(enqueued, 2);
+  f.resize(72, 17); // Dense rows fit at 72×21; shorten so line scrolling can hide the row.
   for (let i = 0; i < 20; i++) f.input("j");
+  assert.doesNotMatch(f.render(), /\[x\] read/);
   f.input(" "); // A scrolled-away selected checkbox is not an actionable footprint.
   assert.equal(enqueued, 2);
+  f.resize(72, 21);
   f.go("Reset tools to inherited");
   assert.match(f.render(), /ctrl\+g: Reset and save/);
   f.input(" ");
@@ -1741,11 +1744,31 @@ test("checkbox Space is a once-only autosave alias; contextual hints and configu
   f.go("Description");
   f.input("\x07");
   assert.match(f.render(), /ctrl\+g: Edit text/);
-  f.go("Description");
+  f.go("Edit description");
   f.input("\x07");
   assert.match(f.render(), /enter.*commit/);
   f.input(" ", "j", "k", "?");
   assert.match(f.render(), / j k\?| jk\?/);
   f.input("\x1b");
   assert.equal(enqueued, 2);
+});
+
+test("rail keeps the shown profile identifiable, path keeps its file name and dense groups fit 80×24", async (t) => {
+  const f = await inspector(t);
+  // Wide: settings focus still marks the profile whose settings are shown.
+  assert.match(f.render(), /│ • general /);
+  assert.doesNotMatch(f.render(), /[›•] scout/);
+  f.input("\t", "down");
+  assert.match(f.render(), /│ › scout /);
+  f.input("\t");
+  assert.match(f.render(), /│ • scout /);
+  // Production 80×24 overlay: the file name survives truncation and the overview keeps
+  // every Profile/Model/Access setting through Delegation visible without scrolling.
+  f.resize(40, 21);
+  assert.match(f.render(), /…[^│]*delegation\.json │/);
+  f.resize(72, 21);
+  const frame = f.render();
+  for (const label of ["Description", "Instructions", "Models", "Tools", "Skills", "Delegation"])
+    assert.match(frame, new RegExp(`[ ›] ${label} `), label);
+  assert.doesNotMatch(frame, /· settings|· rail/);
 });

@@ -3,6 +3,7 @@ import {
   Input,
   matchesKey,
   truncateToWidth,
+  visibleWidth,
   wrapTextWithAnsi,
   type Component,
   type Focusable,
@@ -71,10 +72,25 @@ type Row = {
   warning?: string;
   outcome?: string;
   membership?: boolean;
+  /** Overview text preview, truncated to one line; the full text opens in its setting. */
+  preview?: boolean;
+  /** Read-only detail owned by the preceding action; rendered indented beneath it. */
+  detail?: boolean;
 };
 const bundled = new Set(bundledProfiles().map((p) => p.name));
 const exact = (target: ModelSelection) =>
   JSON.stringify([target.provider, target.id, target.effort]);
+function leftTruncate(text: string, width: number): string {
+  if (visibleWidth(text) <= width) return text;
+  if (width < 2) return truncateToWidth(text, width, "");
+  const chars = [...text];
+  let tail = "";
+  for (let index = chars.length - 1; index >= 0; index--) {
+    if (visibleWidth(chars[index] + tail) > width - 1) break;
+    tail = chars[index] + tail;
+  }
+  return `…${tail}`;
+}
 const format = (value: unknown) =>
   value === undefined ? "unset / inherited" : JSON.stringify(value);
 
@@ -508,6 +524,8 @@ export function createEditableProfileInspector(
     const own = !bundled.has(name) && (destination === "global" || Object.hasOwn(raw, "ceiling"));
     const result: Row[] = [];
     const info = (text: string, id = `info:${result.length}`) => result.push({ id, text });
+    const detail = (text: string, id = `info:${result.length}`) =>
+      result.push({ id, text, detail: true });
     const heading = (text: string, id: string) => result.push({ id, text, heading: true });
     const action = (
       id: string,
@@ -565,6 +583,7 @@ export function createEditableProfileInspector(
       else if (id === "revert") outcome = "Discard unsaved changes";
       else if (id === "reload") outcome = "Reload allowed layers";
       else if (id === "close") outcome = "Finish saves and close";
+      else if (id === "back-list" || id === "back-panel") outcome = "Back";
       result.push({
         id,
         text,
@@ -601,12 +620,12 @@ export function createEditableProfileInspector(
       const draft = draftOf(key);
       action(
         key,
-        `${key === "prompt" ? "Instructions (prompt)" : "Description"}${draft ? " · Unsaved draft · Resume" : ""}${fieldState(key) ? ` · ${fieldState(key)}` : ""} · ${Object.hasOwn(raw, key) ? "override" : "inherited"}`,
+        `${draft ? "Resume" : "Edit"} ${key === "prompt" ? "instructions (prompt)" : "description"}${draft ? " · unsaved draft" : ""}${fieldState(key) ? ` · ${fieldState(key)}` : ""} · ${Object.hasOwn(raw, key) ? "override" : "inherited"}`,
         () => editText(key),
         undefined,
         Boolean(draft), // Retained text stays readable/editable while paused; commit rechecks.
       );
-      info(String(raw[key] ?? profile[key]));
+      detail(String(raw[key] ?? profile[key]) || "(empty)");
       if (!own) {
         const origin = identity();
         action(
@@ -746,9 +765,9 @@ export function createEditableProfileInspector(
             help: "Revoke only this exact grant and save. j/k scroll full target and warning; routing-required grants stay disabled.",
           });
           if (activeId === id) {
-            info(`Exact target: ${target.provider}/${target.id} · ${target.effort}`);
+            detail(`Exact target: ${target.provider}/${target.id} · ${target.effort}`);
             const reason = profileModelReason(metadata(), target);
-            if (reason) info(`Warning: ${reason}`, `unavailable:${id}`);
+            if (reason) detail(`Warning: ${reason}`, `unavailable:${id}`);
           }
         }
       } else {
@@ -851,6 +870,7 @@ export function createEditableProfileInspector(
           value: `${item.value}${state ? ` · ${state}` : ""}`,
           metadata: `${fields.some((f) => Array.isArray(raw[f]) && (raw[f] as unknown[]).length === 0) ? "explicit empty · " : ""}${inheritance}`,
           help: profileSettingHelp[key],
+          preview: key === "description" || key === "prompt",
           outcome: "Open setting",
           run: () => {
             panel = key;
@@ -915,9 +935,9 @@ export function createEditableProfileInspector(
             help: `Exact: ${target.provider}/${target.id} · ${target.effort}. Open this target for controls.`,
           });
           if (targetPanel !== id) continue;
-          info(`Exact target: ${target.provider}/${target.id} · ${target.effort}`);
+          detail(`Exact target: ${target.provider}/${target.id} · ${target.effort}`);
           const unavailable = profileModelReason(metadata(), target);
-          if (unavailable) info(`Warning: ${unavailable}`, `unavailable:${id}`);
+          if (unavailable) detail(`Warning: ${unavailable}`, `unavailable:${id}`);
           action(
             `${id}:earlier`,
             "  ↑ Earlier",
@@ -1111,14 +1131,14 @@ export function createEditableProfileInspector(
     }
     action(
       "destination",
-      "Change destination explicitly",
+      "Change destination (Global / Project)",
       () => navigate("destination"),
       controller.failure ? "Resolve recovery first" : undefined,
       true,
     );
     action(
       "close",
-      "Close · finish verified saves first",
+      "Close · waits for pending saves",
       () => navigate(),
       controller.failure ? "Resolve recovery first" : undefined,
       true,
@@ -1180,6 +1200,7 @@ export function createEditableProfileInspector(
       const actions = rows.filter((row) => row.run);
       if (!actions.some((row) => row.id === activeId)) activeId = actions[0]?.id ?? "";
       let content: string[];
+      let total = 0;
       visible.clear();
       if (child) {
         child.focused = focused && focus === "settings";
@@ -1188,22 +1209,39 @@ export function createEditableProfileInspector(
           : [];
         content = [...child.render(paneWidth), ...errorLines].slice(0, viewport);
       } else {
-        const indexed = rows.map((row) => {
+        const indexed = rows.map((row, index) => {
           const selectedRow = row.id === activeId && focus === "settings";
+          // Actions keep wrapped text under their label; details sit under their owning action.
+          const indent = row.detail ? "    " : row.run ? "  " : "";
           const lines = row.label
             ? profileSettingLines(
                 theme,
                 row.label,
-                row.model ? compactModelLabel(row.model, true) : safe(row.value ?? ""),
+                row.model
+                  ? compactModelLabel(row.model, true)
+                  : row.preview
+                    ? // Text previews stay one line so override/inherited state remains visible.
+                      truncateToWidth(
+                        safe(row.value ?? ""),
+                        Math.max(
+                          8,
+                          paneWidth -
+                            (paneWidth >= 64 ? 17 : 4) -
+                            visibleWidth(` · ${row.metadata}`),
+                        ),
+                      )
+                    : safe(row.value ?? ""),
                 paneWidth,
                 selectedRow,
                 row.metadata,
               )
-            : safe(
-                `${row.run ? (selectedRow ? "› " : "  ") : ""}${row.text}${row.reason ? ` [disabled: ${row.reason}]` : ""}`,
-              )
+            : safe(`${row.text}${row.reason ? ` [disabled: ${row.reason}]` : ""}`)
                 .split("\n")
-                .flatMap((line) => wrapTextWithAnsi(line, paneWidth))
+                .flatMap((line) => wrapTextWithAnsi(line, Math.max(1, paneWidth - indent.length)))
+                .map(
+                  (line, lineIndex) =>
+                    (row.run && selectedRow && lineIndex === 0 ? "› " : indent) + line,
+                )
                 .map((line) =>
                   row.heading
                     ? theme.style(line, {
@@ -1226,11 +1264,13 @@ export function createEditableProfileInspector(
                 );
           if (row.warning && row.id === activeId)
             lines.push(
-              ...wrapTextWithAnsi(safe(row.warning), paneWidth).map((line) =>
-                theme.fg("warning", line),
+              ...wrapTextWithAnsi(safe(row.warning), Math.max(1, paneWidth - 4)).map((line) =>
+                theme.fg("warning", `    ${line}`),
               ),
             );
-          if (row.run || row.heading) lines.push("");
+          // One spacer separates groups; rows inside a group stay dense so a full overview,
+          // checklist or route fits the production 80×24 overlay.
+          if ((row.heading || row.id === "back-panel") && index > 0) lines.unshift("");
           return { row, lines };
         });
         let start = 0;
@@ -1250,6 +1290,7 @@ export function createEditableProfileInspector(
           if (span.from >= offset && span.from < offset + viewport && span.row.run)
             visible.add(span.row.id);
         content = spans.flatMap((span) => span.lines).slice(offset, offset + viewport);
+        total = start;
         follow = false;
       }
       const selectedRow = rows.find((r) => r.id === activeId);
@@ -1257,7 +1298,7 @@ export function createEditableProfileInspector(
         (selectedRow?.reason ? `Disabled: ${selectedRow.reason}` : selectedRow?.help) ??
         (panel
           ? profileSettingHelp[panel]
-          : "Tab rail/settings · ↑↓ select · 1–4 groups. Browsing never changes permissions.");
+          : "Keys 1–4 jump to Profile, Model, Access, Advanced. Browsing never changes permissions.");
       const help = controller.failure
         ? `${controller.failure.intent.profile}.${controller.failure.intent.field}: Not saved · ${controller.pending.length} unsaved · ${controller.failure.recovery === "reload" ? "Reload required" : "Retry / Revert available"}${drafts.size ? ` · ${drafts.size} drafts retained; Resume below` : ""}`
         : controller.reloadError
@@ -1267,7 +1308,16 @@ export function createEditableProfileInspector(
         content = [
           ...content,
           ...Array(Math.max(0, viewport - content.length)).fill(""),
-          "",
+          // The separator doubles as an overflow cue: rows below/above are otherwise invisible.
+          maximum > 0
+            ? theme.fg(
+                "muted",
+                truncateToWidth(
+                  `${offset > 0 ? "↑" : " "}${offset < maximum ? "↓" : " "} lines ${offset + 1}–${Math.min(total, offset + viewport)} of ${total} · j/k scroll`,
+                  paneWidth,
+                ),
+              )
+            : "",
           ...wrapTextWithAnsi(safe(help), paneWidth)
             .slice(0, 2)
             .map((line) =>
@@ -1285,23 +1335,30 @@ export function createEditableProfileInspector(
                 Math.max(0, selectedIndex - bodyHeight + 5),
                 Math.max(0, selectedIndex - bodyHeight + 5) + bodyHeight - 4,
               )
-              .map(
-                (p) =>
-                  `${name === p.name && focus === "rail" ? "›" : " "} ${p.name}${controller.pending.some((i) => i.profile === p.name) ? " [pending]" : ""}${[...drafts.values()].some((d) => d.profile === p.name) ? " [draft]" : ""}`,
-              ),
+              .map((p) => {
+                // The current profile stays identifiable when focus is in settings: `›` marks
+                // rail focus, `•` the profile whose settings are shown.
+                const current = name === p.name;
+                const text = safe(
+                  `${current ? (focus === "rail" ? "›" : "•") : " "} ${p.name}${controller.pending.some((i) => i.profile === p.name) ? " [pending]" : ""}${[...drafts.values()].some((d) => d.profile === p.name) ? " [draft]" : ""}`,
+                );
+                return current ? theme.style(text, { fg: "accent", bold: true }) : text;
+              }),
             "",
-            `Source: ${catalog().provenance[name]?.source ?? "resolved"}`,
-            "Callable tools: unknown",
+            theme.fg("muted", safe(`Source: ${catalog().provenance[name]?.source ?? "resolved"}`)),
+            theme.fg("muted", "Callable tools: unknown"),
           ]
         : [
-            `${focus === "rail" ? "›" : " "} Profiles ${selectedIndex + 1}/${profiles.length} · ${name}`,
-            "─".repeat(inner),
+            safe(
+              `${focus === "rail" ? "›" : " "} Profiles ${selectedIndex + 1}/${profiles.length} · ${name}`,
+            ),
+            theme.fg("border", "─".repeat(inner)),
           ];
       const body = wide
         ? Array.from(
             { length: bodyHeight },
             (_, i) =>
-              cell(safe(roster[i] ?? ""), railWidth) +
+              cell(roster[i] ?? "", railWidth) +
               theme.fg("border", " │ ") +
               cell(content[i] ?? "", paneWidth),
           )
@@ -1321,13 +1378,14 @@ export function createEditableProfileInspector(
       const hint =
         focus === "rail"
           ? `Tab / ${confirm}: settings · ↑↓ profiles · ${cancel}: back/close`
-          : `${confirm}${selectedRow?.membership && !selectedRow.reason ? " / Space" : ""}: ${activation} · Tab focus · ${cancel}: ${panel || listField ? "back" : "close"}`;
+          : `${confirm}${selectedRow?.membership && !selectedRow.reason ? " / Space" : ""}: ${activation} · Tab: profiles · ${cancel}: ${panel || listField ? "back" : "close"}`;
       return [
         paint(`╭${cell(` Subagent Profiles / ${safe(name)} · ${label} `, width - 2)}╮`),
         row(
-          `${destination === "global" ? `${mode} GLOBAL · other workspaces` : options.isProjectTrusted() ? `${mode} Trusted Project` : "Read-only Project · trust unavailable"} · ${controller.pending.length} pending · ${focus}`,
+          `${destination === "global" ? `${mode} GLOBAL · other workspaces` : options.isProjectTrusted() ? `${mode} Trusted Project` : "Read-only Project · trust unavailable"} · ${controller.pending.length} pending`,
         ),
-        row(safe(controller.path)),
+        // Clip the directory, not the file name, so the written file stays identifiable.
+        row(theme.fg("muted", leftTruncate(safe(controller.path), inner))),
         ...body.map(row),
         row(
           child
