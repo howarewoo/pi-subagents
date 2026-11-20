@@ -8,6 +8,12 @@ export type ProfileModelEntry = Readonly<{
   name: string;
   providerLabel: string;
   efforts: readonly Readonly<{ effort: ModelSelection["effort"]; reason?: string }>[];
+  /** Optional presentation metadata; absent when the host reports none. Cost is $ per million tokens. */
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: Readonly<{ input: number; output: number }>;
+  reasoning?: boolean;
+  vision?: boolean;
 }>;
 export type ProfileModelCatalog = Readonly<{
   entries: readonly ProfileModelEntry[];
@@ -19,10 +25,16 @@ export type ProfileModelPickOptions = {
   context: readonly string[];
   /** Caller discloses the semantic effect; the picker itself never writes or grants. */
   selectionLabel?: string;
+  /** Models with any of these exact selections are listed first, above a divider. */
+  prioritized?: readonly ModelSelection[];
   /** Undefined allows any accessible selection; [] permits none. Never creates grants. */
   allowed?: readonly ModelSelection[];
   excluded?: readonly ModelSelection[];
 };
+
+const count = (value: unknown) =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+const price = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 /** Snapshot only synchronous host metadata. Never refresh caches, resolve credentials or call providers. */
 export function readProfileModelCatalog(
@@ -43,6 +55,19 @@ export function readProfileModelCatalog(
       )
         continue;
       seen.add(key);
+      // Presentation-only fields from the same snapshot; unknown values are omitted, not guessed.
+      const metadata: Partial<ProfileModelEntry> = {
+        contextWindow: count(model.contextWindow),
+        maxTokens: count(model.maxTokens),
+        cost:
+          price(model.cost?.input) && price(model.cost?.output)
+            ? { input: model.cost.input, output: model.cost.output }
+            : undefined,
+        reasoning: typeof model.reasoning === "boolean" ? model.reasoning : undefined,
+        vision: Array.isArray(model.input) ? model.input.includes("image") : undefined,
+      };
+      for (const field of Object.keys(metadata) as (keyof typeof metadata)[])
+        if (metadata[field] === undefined) delete metadata[field];
       entries.push({
         provider: model.provider,
         id: model.id,
@@ -70,6 +95,7 @@ export function readProfileModelCatalog(
             };
           }
         }),
+        ...metadata,
       });
     }
     return { entries };

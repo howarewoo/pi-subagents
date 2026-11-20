@@ -275,7 +275,7 @@ test("catalog inside persistent rail discloses atomic Add/grant, supports depend
   assert.match(f.render(), /Profiles/);
   assert.match(f.render(), /explicit overrides/);
   assert.doesNotMatch(f.render(), /no automatic grants/);
-  f.input("Beta", "\r", "\r", "\x1b[C", "\r", "\r");
+  f.input("Beta", "\r", "\r");
   await entered.promise;
   assert.equal(f.controller.pending.length, 1);
   f.activate("↳ Fallback 1");
@@ -1167,16 +1167,18 @@ test("production-sized model flow browses eligible rows, promotes the first targ
     f.activate("Add to chain / Add and grant");
     assert.doesNotMatch(f.render(), /Models · resize|Hidden Scope Model/);
     assert.match(f.render(), /1 model hidden: session scope/);
+    // Both models hold grants, so no divider separates them.
+    assert.match(f.render(), /❯ fixture\/a[^\n]*\n[^\n]*│ {3}fixture\/b/);
     f.input("down");
-    assert.match(f.render(), /› Friendly Alpha/);
-    f.input("down");
-    assert.match(f.render(), /› Friendly Beta/);
+    assert.match(f.render(), /❯ fixture\/b/);
+    f.input("up", "down");
+    assert.match(f.render(), /❯ fixture\/b/);
     f.input("\r");
-    assert.match(f.render(), /Effort: not chosen/);
+    assert.match(f.render(), /Effort: \[◕ high\]/);
     assert.equal(f.controller.pending.length, 0);
-    if (width === 72) f.input("\x1b");
+    if (width === 72) f.input("\x1b", "\x1b"); // Effort strip, then the picker.
   }
-  f.input("\x1b[C", "\r", "\r");
+  f.input("\r");
   await f.controller.settled();
   assert.equal(f.controller.status, "saved");
   assert.deepEqual((await f.disk()).general.fallback, [a, b]);
@@ -1239,12 +1241,12 @@ test("production overlay retains eligible results and confirmation when mixed hi
   assert.doesNotMatch(rendered, /Models · resize/);
   assert.match(rendered, /3 models hidden: already present, session scope/);
   assert.match(rendered.replace(/[│\s]+/g, " "), /unavailable metadata\/access/);
-  assert.match(rendered, /Refresh metadata/);
+  assert.match(rendered, /\^R refresh/);
   f.input("down");
-  assert.match(f.render(), /› Friendly Beta/);
+  assert.match(f.render(), /❯ fixture\/b/);
   f.input("\r");
-  assert.match(f.render(), /Effort: not chosen/);
-  f.input("\x1b[C", "\r", "\r");
+  assert.match(f.render(), /Effort: \[◕ high\]/);
+  f.input("\r");
   await f.controller.settled();
   assert.equal(f.controller.status, "saved");
   assert.deepEqual((await f.disk()).general.fallback, [a, b]);
@@ -1269,13 +1271,13 @@ test("physical 80×24 Global Add uses the production 90% overlay and accepts eve
       f.open("Models");
       f.activate("Add to chain / Add and grant");
       assert.doesNotMatch(f.render(), /Models · resize/);
-      assert.match(f.render(), /Grant permits explicit overrides too/);
+      assert.match(f.render().replace(/[│\s]+/g, " "), /Grant permits explicit overrides too/);
       assert.match(f.render(), /All effort model/);
       assert.match(f.render(), /other workspaces/);
-      f.input("all-effort", "\r", "\r");
-      for (let i = 0; i <= index; i++) f.input("\x1b[C");
+      f.input("all-effort", "\r");
+      for (let i = 0; i < index; i++) f.input("\x1b[C");
       assert.equal(f.controller.pending.length, 0);
-      assert.match(f.render(), new RegExp(`Effort: ${effort}`));
+      assert.match(f.render(), new RegExp(`\\[. ${effort}\\]`));
       f.input("\x1bOP"); // F1 exposes complete secondary metadata without leaving the picker.
       let details = f.render();
       for (let i = 0; i < 30; i++) {
@@ -1291,7 +1293,7 @@ test("physical 80×24 Global Add uses the production 90% overlay and accepts eve
         0,
         "Enter in metadata details cannot accept a hidden selection",
       );
-      f.input("\x1b", "\r", "\r");
+      f.input("\x1b", "\r");
       await f.controller.settled();
       const target = { provider: "fixture", id: "all-effort-target", effort };
       assert.deepEqual((await f.disk()).general.fallback, [target]);
@@ -1322,7 +1324,7 @@ test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across pro
   f.open("Models");
   f.activate("Add to chain / Add and grant");
   f.input("ab cd", ctrlLeft, "X");
-  assert.match(f.render().replaceAll(/\x1b_pi:\/?f?c\x07/g, ""), /Search: ab Xcd/);
+  assert.match(f.render().replaceAll(/\x1b_pi:\/?f?c\x07/g, ""), /🔍 > ab Xcd/);
   assert.equal(f.controller.pending.length, 0);
   f.input("\x1b");
   f.open("Instructions");
@@ -1665,7 +1667,7 @@ test("representative profile/model component checkpoint at production baseline, 
     assert.match(f.render(), /Friendly Beta/);
     f.input("\x1bOP");
     assert.match(f.render(), /Model details/);
-    f.input("\x1b", "down", "\r", "\x1b[C", "\r");
+    f.input("\x1b", "down", "\r");
     const ready = f.render();
     assert.match(ready, /Add and grant/);
     f.resize(54, 14);
@@ -1674,7 +1676,7 @@ test("representative profile/model component checkpoint at production baseline, 
     assert.equal(f.controller.pending.length, 0);
     f.resize(width, height);
     assert.match(f.render(), /Add and grant/);
-    f.input("\x1b");
+    f.input("\x1b", "\x1b");
     assert.equal(f.controller.pending.length, 0);
   }
   assert.deepEqual((await f.disk()).general.fallback, [a]);
@@ -1739,7 +1741,7 @@ test("checkbox Space is a once-only autosave alias; contextual hints and configu
   f.input("1");
   f.go("Models");
   f.input(" ");
-  assert.doesNotMatch(f.render(), /Add to chain|Search:/);
+  assert.doesNotMatch(f.render(), /Add to chain|🔍/);
   assert.equal(enqueued, 2);
   f.go("Description");
   f.input("\x07");

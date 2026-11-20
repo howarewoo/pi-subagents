@@ -2,10 +2,12 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   colorToOklch,
   oklchColor,
+  sliceByColumn,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import type { ModelSelection } from "./model-policy.ts";
 
 export type ProfilePanelTheme = Pick<Theme, "fg" | "style"> & {
   colors: Pick<Theme["colors"], "customMessageBg">;
@@ -53,4 +55,61 @@ export function profileSettingLines(
     prefix + styledLabel,
     ...wrapTextWithAnsi(value, Math.max(1, width - 4)).map((s) => `    ${s}`),
   ];
+}
+
+/** One glyph per supported effort, rising from off to max. */
+export const PROFILE_EFFORT_GLYPHS: Readonly<Record<ModelSelection["effort"], string>> = {
+  off: "⦸",
+  minimal: "◌",
+  low: "◔",
+  medium: "◑",
+  high: "◕",
+  xhigh: "●",
+  max: "◉",
+};
+
+/** `◔ low` */
+export function profileEffortLabel(effort: ModelSelection["effort"]): string {
+  return `${PROFILE_EFFORT_GLYPHS[effort]} ${effort}`;
+}
+
+/** Token counts as `1m`, `500k`, `8.2k`; unknown or non-positive counts render blank. */
+export function profileTokenCount(tokens: number | undefined): string {
+  if (!tokens || !Number.isFinite(tokens) || tokens <= 0) return "";
+  const [value, unit] =
+    tokens >= 1e6 ? [tokens / 1e6, "m"] : tokens >= 1e3 ? [tokens / 1e3, "k"] : [tokens, ""];
+  return `${value < 10 ? Number(value.toFixed(1)) : Math.round(value)}${unit}`;
+}
+
+/** `$input/output` per million tokens; all-zero cost is `$0` because zero may mean unknown. */
+export function profilePrice(
+  cost: Readonly<{ input: number; output: number }> | undefined,
+): string {
+  if (!cost) return "";
+  const amount = (value: number) => String(Number(value.toFixed(3)));
+  return cost.input === 0 && cost.output === 0
+    ? "$0"
+    : `$${amount(cost.input)}/${amount(cost.output)}`;
+}
+
+/**
+ * Muted `provider/` and a bright id within `width`. The provider is truncated first (down to `…/`)
+ * so the id stays visible; only an id too long on its own is truncated too.
+ */
+export function profileModelIdentity(
+  theme: Pick<ProfilePanelTheme, "fg">,
+  provider: string,
+  id: string,
+  width: number,
+  idColor: "text" | "accent" = "text",
+): string {
+  // Plain clipping keeps each part inside its own color (truncateToWidth would insert resets).
+  const clip = (text: string, room: number) =>
+    visibleWidth(text) <= room ? text : room < 1 ? "" : `${sliceByColumn(text, 0, room - 1)}…`;
+  if (width < 3) return theme.fg(idColor, clip(id, width));
+  const providerRoom = Math.max(1, width - visibleWidth(id) - 1);
+  return (
+    theme.fg("muted", `${clip(provider, providerRoom)}/`) +
+    theme.fg(idColor, clip(id, width - providerRoom - 1))
+  );
 }

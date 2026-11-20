@@ -1,3 +1,27 @@
+# Model picker verification
+
+Branch `feat/model-picker`, based on `main` at
+`7ab8b6707b958ddb01f52946dcf4a520ce572faf`. Historical records below are preserved.
+
+- `npm run check`: lint, formatting and strict typecheck pass; **546/546 tests**, no
+  failures/skips/cancellations; controlled SDK exercise prints PASS. One earlier aggregate
+  run on a heavily loaded host failed four timing-sensitive resume/quota/reload tests in
+  files this change does not touch; the affected test passed in isolation and the
+  following full run passed.
+- Component tests drive the picker directly and through the editable Inspector:
+  type-to-search with literal Space, j/k and `?`, ↑/↓ across the granted-first divider,
+  provider tabs through Alt+←/→ and Tab/Shift+Tab, Enter → effort strip → Enter, dimmed
+  ineligible efforts with their exact reason and no completion, Escape layering (details →
+  strip → list → cancel), F1 never accepting, Ctrl+R snapshot reread, stale-snapshot
+  rejection, ordered shedding of spacers, hidden summary and detail line, and bounded
+  output at **72×25, 80×24, 120×36** and smaller sizes. Catalog metadata (context window,
+  output limit, price, reasoning, vision) is checked against the SDK `fauxProvider` shape
+  and omitted when unknown.
+- Plain and themed `render()` captures at **120×36**, **80×24** and **68×14** use
+  multi-provider fixture data. They are component output, not a terminal-emulator
+  screen: whether 🧠 and the effort glyphs occupy their measured width in a given
+  terminal was not observed.
+
 # Combined acceptance follow-up
 
 The verification-only local A/B/C reconciliation passed `npm run check`: lint, format,
