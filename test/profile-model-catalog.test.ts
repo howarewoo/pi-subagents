@@ -794,9 +794,9 @@ test("formatters: effort glyphs, token counts, prices and provider-first identit
   assert.equal(profilePrice({ input: 0.075, output: 0.3 }), "$0.075/0.3");
   assert.equal(profilePrice(undefined), "");
   const fg = (color: string, text: string) => `<${color}>${text}</>`;
-  const identity = (width: number, color?: "accent") =>
+  const identity = (width: number, color?: "accent", themeFg = fg) =>
     profileModelIdentity(
-      { fg } as Parameters<typeof profileModelIdentity>[0],
+      { fg: themeFg } as Parameters<typeof profileModelIdentity>[0],
       "google-antigravity",
       "claude-sonnet",
       width,
@@ -809,7 +809,7 @@ test("formatters: effort glyphs, token counts, prices and provider-first identit
   assert.equal(identity(10), "<muted>…/</><text>claude-…</>");
   for (const width of [0, 1, 2, 3, 10, 15, 22, 40])
     assert.ok(
-      stripVTControlCharacters(identity(width).replace(/<[^>]*>/g, "")).length <= width,
+      visibleWidth(identity(width, undefined, (_color, text) => text)) <= width,
       String(width),
     );
 });
