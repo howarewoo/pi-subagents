@@ -1,6 +1,12 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { ModelSelection } from "./model-policy.ts";
 import { bundledProfiles, type Profile, type ProfileCatalog } from "./profiles.ts";
 import { safe } from "./thread.ts";
+import {
+  profileEffortLabel,
+  profileModelIdentity,
+  type ProfilePanelTheme,
+} from "./profile-presentation.ts";
 
 export type ProfileSetting =
   | "description"
@@ -36,7 +42,8 @@ export const profileSettingHelp: Record<ProfileSetting, string> = {
   advanced:
     "Advanced: routing policy, exact model grants, authority, profile actions and source diagnostics.",
 };
-export function profileOverview(profile: Profile, route?: string) {
+/** `warning` tags an unavailable/restricted default route target in the Models summary. */
+export function profileOverview(profile: Profile, warning?: string) {
   const preview = (text: string) => truncateToWidth(safe(text).replaceAll(/\s+/g, " "), 58);
   return [
     { heading: "Profile", settings: ["description", "prompt"] },
@@ -57,8 +64,14 @@ export function profileOverview(profile: Profile, route?: string) {
       const key = item as ProfileSetting;
       const selectionLabel = (target: NonNullable<Profile["model"]>) =>
         `${truncateToWidth(safe(`${target.provider}/${target.id}`), 48)} · ${target.effort}`;
-      const routeSummary = profile.fallback?.length
-        ? `Default · ${route ?? selectionLabel(profile.fallback[0])} · ${profile.fallback.length - 1} fallback${profile.fallback.length === 2 ? "" : "s"}`
+      const fallbacks = (profile.fallback?.length ?? 0) - 1;
+      const primary = key === "route" ? profile.fallback?.[0] : undefined;
+      const identity = primary && {
+        target: primary,
+        text: truncateToWidth(safe(`${primary.provider}/${primary.id}`), 48),
+      };
+      const routeSummary = identity
+        ? `${identity.text} ${profileEffortLabel(identity.target.effort)}${warning ? ` ⚠ ${warning}` : ""} · ${fallbacks ? `+${fallbacks} fallback${fallbacks === 1 ? "" : "s"}` : "no fallbacks"}`
         : profile.prewalk
           ? `Prewalk · ${selectionLabel(profile.prewalk)}`
           : profile.model
@@ -76,9 +89,23 @@ export function profileOverview(profile: Profile, route?: string) {
                 : key === "advanced"
                   ? "Routing policy, authority, profile actions ›"
                   : `${profile[key]?.length ?? 0} ${key === "skills" ? "paths" : "allowed"} · ceiling`;
-      return { heading: undefined, key, value };
+      return { heading: undefined, key, value, identity };
     }),
   ]);
+}
+
+/** Sanitized overview value; a chain's default reads as muted `provider/` and bright id. */
+export function profileOverviewValue(
+  theme: Pick<ProfilePanelTheme, "fg">,
+  item: { value: string; identity?: { target: ModelSelection; text: string } },
+): string {
+  const value = safe(item.value);
+  if (!item.identity) return value;
+  const { target, text } = item.identity;
+  return (
+    profileModelIdentity(theme, safe(target.provider), safe(target.id), visibleWidth(text)) +
+    value.slice(text.length)
+  );
 }
 
 /** Exact selected-layer declaration, separate from the resolved workspace profile. */

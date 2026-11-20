@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { visibleWidth, oklchColor, styleText, backgroundAnsi } from "@earendil-works/pi-tui";
+import { profileOverview, profileOverviewValue } from "../src/profile-overview.ts";
 import { createProfileViewer, resolvedProfiles } from "../src/profile-viewer.ts";
 import { bundledProfiles } from "../src/profiles.ts";
 import extension from "../src/pi-extended-subagents.ts";
@@ -510,11 +511,20 @@ test("configured fallback chains are visible separately from unordered model gra
   for (const width of [120, 42]) {
     const output = scrollThrough(viewer, width).replace(/[\s│]/g, "");
     assert.match(output, /Defaultandorderedfallbacks\(routing,notgrants\)/);
-    assert.match(output, /Default:primary-chain-marker\/primary/);
-    assert.match(output, /↳Fallback1:backup-chain-marker\/backup/);
+    assert.match(output, /primary-chain-marker\/primary◕high/);
+    assert.match(output, /↳backup-chain-marker\/backup:low/);
     assert.match(output, /Unchainedroute\(onlywhenchainingisbypassed\/disabled\)/);
     assert.doesNotMatch(output, /Modeldefault/);
   }
+  viewer.handleInput!("2");
+  const overview = stripAnsi(viewer.render(120).join("\n"));
+  assert.match(overview, /Models +primary-chain-marker\/primary ◕ high · \+1 fallback/);
+  viewer.handleInput!("\r");
+  const rows = stripAnsi(viewer.render(120).join("\n"));
+  // Same row format as the editable chain, without keys or a selection marker.
+  assert.match(rows, /│ {3}primary-chain-marker\/primary {2,}◕ high │/);
+  assert.match(rows, /│ {3}↳ backup-chain-marker\/backup:low +│/);
+  assert.doesNotMatch(rows, /❯/);
 });
 
 test("Inspector focus and group jumps retain the selected role through stacked and tiny layouts", () => {
@@ -651,4 +661,18 @@ test("a visible label opens even when its wrapped value or trailing spacer canno
     viewer.handleInput!("\r");
     assert.match(viewer.render(width).join("\n"), /Read-only detail/);
   }
+});
+
+test("overview Models value styles the chain default as muted provider/ and bright id", () => {
+  const tagged = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
+  const primary = { provider: "prov\x1b[31m", id: "model-id", effort: "low" as const };
+  const route = profileOverview({ ...bundledProfiles()[0], fallback: [primary, primary] }).find(
+    (item) => item.key === "route",
+  )!;
+  assert.equal(
+    profileOverviewValue(tagged, route),
+    "<muted>prov/</muted><text>model-id</text> ◔ low · +1 fallback",
+  );
+  const plain = profileOverview(bundledProfiles()[0]).find((item) => item.key === "route")!;
+  assert.equal(profileOverviewValue(tagged, plain), "Selected parent model");
 });

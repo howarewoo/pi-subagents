@@ -817,3 +817,26 @@ test("formatters: effort glyphs, token counts, prices and provider-first identit
       String(width),
     );
 });
+
+test("effort preselection keeps a preferred (replaced) effort level when eligible, then prefers a granted effort", () => {
+  const triple = {
+    ...three.entries[1],
+    efforts: [{ effort: "off" as const }, { effort: "low" as const }, { effort: "high" as const }],
+  };
+  const source = () => ({ entries: [triple] });
+  const granted = { provider: triple.provider, id: triple.id, effort: "high" as const };
+  const strip = (opts: Partial<ProfileModelPickOptions>) => {
+    const p = picker(source, { ...options, prioritized: [granted], ...opts });
+    p.send("enter");
+    return p.render();
+  };
+  assert.match(strip({ preferredEffort: "low" }), /Effort: ⦸ off  \[◔ low\]  ◕ high/);
+  const low = { ...granted, effort: "low" as const };
+  assert.match(
+    strip({ preferredEffort: "low", excluded: [low] }),
+    /Effort: ⦸ off  ◔ low  \[◕ high\]/,
+    "an ineligible preferred effort falls back to a granted one",
+  );
+  assert.match(strip({ preferredEffort: "max" }), /\[◕ high\]/, "unsupported: granted next");
+  assert.match(strip({ prioritized: [] }), /Effort: \[⦸ off\]/, "then the first eligible");
+});

@@ -189,7 +189,7 @@ async function inspector(
     input("\x1b[H");
     for (let count = 0; count < 240; count++) {
       const output = render();
-      if (output.includes(`› ${label}`)) return;
+      if (output.includes(`› ${label}`) || output.includes(`❯ ${label}`)) return;
       input("down");
     }
     assert.fail(`Unreachable action ${label}:\n${render()}`);
@@ -271,15 +271,15 @@ test("catalog inside persistent rail discloses atomic Add/grant, supports depend
     writes.push(await f.disk());
   });
   f.open("Models");
-  f.activate("Add to chain / Add and grant");
+  f.activate("+ Add fallback…");
   assert.match(f.render(), /Profiles/);
   assert.match(f.render(), /explicit overrides/);
   assert.doesNotMatch(f.render(), /no automatic grants/);
   f.input("Beta", "\r", "\r");
   await entered.promise;
   assert.equal(f.controller.pending.length, 1);
-  f.activate("↳ Fallback 1");
-  f.activate("  ↑ Earlier");
+  f.go("↳ fixture/b:high");
+  f.input("\x1b[1;2A"); // Shift+↑ moves the selected target earlier.
   assert.equal(f.controller.pending.length, 2);
   f.input("\t", "down", "down", "\t");
   f.open("Instructions");
@@ -342,9 +342,10 @@ test("immediate permissions, exact skills/leaf grants and dependent grant remova
   await f.controller.settled();
   assert.equal((await f.disk()).general.description, "unrelated");
   f.open("Models");
-  f.activate("Default");
-  assert.match(f.render(), /Warning:/);
-  f.activate("  Remove final target");
+  f.go("fixture/a");
+  assert.match(f.render(), /fixture\/a +⦸ off ⚠ unavailable|fixture\/a ⚠ unavailable +⦸ off/);
+  assert.match(f.render(), /⚠ Metadata unavailable/);
+  f.input("x");
   await f.controller.settled();
   assert.deepEqual((await f.disk()).general.fallback, false);
   assert.deepEqual((await f.disk()).general.models, [a]);
@@ -979,7 +980,7 @@ test("resize Escape cancels hidden single-line/multiline/catalog input before na
   for (const [setting, field] of [
     ["Description", "Edit description"],
     ["Instructions", "Edit instructions (prompt)"],
-    ["Models", "Add to chain / Add and grant"],
+    ["Models", "+ Add fallback…"],
   ]) {
     f.open(setting);
     f.activate(field);
@@ -1025,16 +1026,15 @@ test("compact overview is browsing-only; focused model targets keep exact identi
   assert.match(initial, /Description/);
   assert.match(initial, /Instructions/);
   assert.doesNotMatch(initial, /Last verified|Earlier|Remove from chain|Reset chain|GLOBAL REACH/);
+  assert.match(initial, /Models +fixture\/a ⦸ off · \+1 fallback/);
   f.open("Models");
-  assert.match(f.render(), /Default.*Friendly Alpha/);
-  assert.match(f.render(), /↳ Fallback 1.*Friendly Beta/);
+  assert.match(f.render(), /❯ fixture\/a +⦸ off/);
+  assert.match(f.render(), /  ↳ fixture\/b:high/);
+  assert.match(f.render(), /Friendly Alpha · fixture\/a · off/);
   assert.doesNotMatch(f.render(), /Earlier|Change supported effort|Remove from chain/);
-  f.activate("↳ Fallback 1");
-  const target = f.render();
-  assert.match(target, /fixture\/b.*high/);
-  assert.doesNotMatch(target, /Default.*Friendly Alpha/);
-  f.input("\x1b");
-  assert.match(f.render(), /› ↳ Fallback 1/);
+  f.input("down");
+  assert.match(f.render(), /❯ ↳ fixture\/b:high/);
+  assert.match(f.render(), /Friendly Beta · fixture\/b · high/);
   f.input("\x1b");
   assert.match(f.render(), /› Models/);
   f.open("Tools");
@@ -1051,11 +1051,12 @@ test("same-friendly-name unavailable saved routes retain exact selected-target i
   const f = await inspector(t, { general: { models: [a, b], fallback: [a, b] } });
   f.setMetadata({ entries: models.entries.map((e) => ({ ...e, name: "Same friendly name" })) });
   f.open("Models");
-  f.activate("↳ Fallback 1");
-  assert.match(f.render(), /Exact target: fixture\/b · high/);
+  f.go("↳ fixture/b:high");
+  assert.match(f.render(), /Same friendly name · fixture\/b · high/);
   f.setMetadata({ entries: [] });
-  assert.match(f.render(), /Warning: Unavailable/);
-  f.activate("  Remove from chain");
+  assert.match(f.render(), /❯ ↳ fixture\/b:high ⚠ unavailable/);
+  assert.match(f.render(), /⚠ Unavailable in accessible catalog/);
+  f.input("x");
   await f.controller.settled();
   assert.deepEqual((await f.disk()).general.fallback, [a]);
   assert.deepEqual((await f.disk()).general.models, [a, b]);
@@ -1107,10 +1108,23 @@ test("very long unavailable saved model identity stays inspectable and removable
   f.setMetadata({ entries: [] });
   f.resize(80, 28);
   f.open("Models");
-  f.activate("Default");
-  f.go("  Remove final target");
-  assert.match(f.render(), /keep grants/);
-  f.input("\r");
+  assert.match(f.render(), /❯ …\/long-saved-model-.*… ⚠ unavailable +⦸ off/);
+  // j reveals one line at a time; at the end the last viewport holds the remaining lines.
+  const seen: string[] = [];
+  for (let i = 0; i < 120; i++) {
+    const frame = f.render().split("\n");
+    if (frame[5] === seen.at(-1)) {
+      seen.push(...frame.slice(6));
+      break;
+    }
+    seen.push(frame[5]!);
+    f.input("j");
+  }
+  const all = seen.join("").replace(/[\s│]/g, "");
+  assert.ok(all.includes(`Exact:fixture/${target.id}·off`));
+  assert.ok(all.includes("xsavesfallback:false.Keepsexactmodelgrants"));
+  f.go("…/long-saved-model");
+  f.input("x");
   await f.controller.settled();
   assert.equal((await f.disk()).general.fallback, false);
   assert.deepEqual(
@@ -1133,8 +1147,10 @@ test("paused mutations still allow read-only nested target and delegation inspec
   await f.controller.settled();
   assert.equal(f.controller.status, "not-saved");
   f.open("Models");
-  f.activate("Default");
-  assert.match(f.render(), /Exact target: fixture\/a · off/);
+  assert.match(f.render(), /❯ fixture\/a +⦸ off/);
+  f.input("x", "\x1b[C", "]");
+  assert.match(f.render(), /Read-only/);
+  assert.equal(f.controller.pending.length, 1);
   f.open("Delegation");
   f.activate("Spawn targets (spawn):");
   assert.match(f.render(), /\[disabled: Read-only\]/);
@@ -1164,7 +1180,7 @@ test("production-sized model flow browses eligible rows, promotes the first targ
   ]) {
     f.resize(width, height);
     f.open("Models");
-    f.activate("Add to chain / Add and grant");
+    f.activate("+ Add fallback…");
     assert.doesNotMatch(f.render(), /Models · resize|Hidden Scope Model/);
     assert.match(f.render(), /1 model hidden: session scope/);
     // Both models hold grants, so no divider separates them.
@@ -1183,24 +1199,24 @@ test("production-sized model flow browses eligible rows, promotes the first targ
   assert.equal(f.controller.status, "saved");
   assert.deepEqual((await f.disk()).general.fallback, [a, b]);
   assert.deepEqual((await f.disk()).general.model, b);
-  assert.match(f.render(), /Default.*Friendly Alpha/);
-  assert.match(f.render(), /↳ Fallback 1.*Friendly Beta/);
+  assert.match(f.render(), /  fixture\/a +⦸ off/);
+  assert.match(f.render(), /❯ ↳ fixture\/b:high/, "selection follows the added target");
   f.open("Advanced");
   assert.match(f.render(), /Default is the first entry in Models/);
   f.input("\x1b[F");
   assert.doesNotMatch(f.render(), /Choose model|Reset model/);
   assert.equal(f.controller.pending.length, 0);
   f.open("Models");
-  f.activate("↳ Fallback 1");
-  f.activate("  ↑ Earlier");
+  f.go("↳ fixture/b:high");
+  f.input("[");
   await f.controller.settled();
   assert.deepEqual((await f.disk()).general.fallback, [b, a]);
   assert.deepEqual((await f.disk()).general.model, b);
-  assert.match(f.render(), /Default.*Friendly Beta/);
-  f.activate("  Remove from chain");
+  assert.match(f.render(), /❯ fixture\/b +◕ high/, "selection follows the moved target");
+  f.input("\x1b[3~"); // Delete
   await f.controller.settled();
-  assert.match(f.render(), /Default.*Friendly Alpha/);
-  assert.doesNotMatch(f.render(), /↳ Fallback/);
+  assert.match(f.render(), /❯ fixture\/a +⦸ off/, "selection moves to the next row");
+  assert.doesNotMatch(f.render(), /↳/);
   f.go("Disable chain");
   assert.match(f.render(), /Disables fallback.*Friendly Beta/);
   f.input("\r");
@@ -1236,7 +1252,7 @@ test("production overlay retains eligible results and confirmation when mixed hi
   });
   f.resize(72, 25);
   f.open("Models");
-  f.activate("Add to chain / Add and grant");
+  f.activate("+ Add fallback…");
   const rendered = f.render();
   assert.doesNotMatch(rendered, /Models · resize/);
   assert.match(rendered, /3 models hidden: already present, session scope/);
@@ -1269,7 +1285,7 @@ test("physical 80×24 Global Add uses the production 90% overlay and accepts eve
       });
       f.resize(Math.floor(80 * 0.9), Math.floor(24 * 0.9));
       f.open("Models");
-      f.activate("Add to chain / Add and grant");
+      f.activate("+ Add fallback…");
       assert.doesNotMatch(f.render(), /Models · resize/);
       assert.match(f.render().replace(/[│\s]+/g, " "), /Grant permits explicit overrides too/);
       assert.match(f.render(), /All effort model/);
@@ -1322,7 +1338,7 @@ test("native Ctrl+Left edits text; multiline Tab keeps an owned draft across pro
   assert.equal(writes, 1);
   f.input("\t");
   f.open("Models");
-  f.activate("Add to chain / Add and grant");
+  f.activate("+ Add fallback…");
   f.input("ab cd", ctrlLeft, "X");
   assert.match(f.render().replaceAll(/\x1b_pi:\/?f?c\x07/g, ""), /🔍 > ab Xcd/);
   assert.equal(f.controller.pending.length, 0);
@@ -1662,7 +1678,7 @@ test("representative profile/model component checkpoint at production baseline, 
   ]) {
     f.resize(width, height);
     f.open("Models");
-    f.activate("Add to chain / Add and grant");
+    f.activate("+ Add fallback…");
     assert.doesNotMatch(f.render(), /Models · resize/);
     assert.match(f.render(), /Friendly Beta/);
     f.input("\x1bOP");
@@ -1741,7 +1757,7 @@ test("checkbox Space is a once-only autosave alias; contextual hints and configu
   f.input("1");
   f.go("Models");
   f.input(" ");
-  assert.doesNotMatch(f.render(), /Add to chain|🔍/);
+  assert.doesNotMatch(f.render(), /Add fallback|🔍/);
   assert.equal(enqueued, 2);
   f.go("Description");
   f.input("\x07");
@@ -1773,4 +1789,287 @@ test("rail keeps the shown profile identifiable, path keeps its file name and de
   for (const label of ["Description", "Instructions", "Models", "Tools", "Skills", "Delegation"])
     assert.match(frame, new RegExp(`[ ›] ${label} `), label);
   assert.doesNotMatch(frame, /· settings|· rail/);
+});
+
+const right = "\x1b[C",
+  left = "\x1b[D",
+  shiftUp = "\x1b[1;2A",
+  shiftDown = "\x1b[1;2B";
+const cLow = { provider: "fixture", id: "c", effort: "low" as const };
+const cHigh = { ...cLow, effort: "high" as const };
+const withC: ProfileModelCatalog = {
+  entries: [
+    ...models.entries,
+    {
+      provider: "fixture",
+      id: "c",
+      name: "Friendly Gamma",
+      providerLabel: "Custom Fixture",
+      efforts: [
+        { effort: "off" },
+        { effort: "minimal", reason: "Outside current session model/effort scope" },
+        { effort: "low" },
+        { effort: "medium" },
+        { effort: "high" },
+      ],
+    },
+  ],
+};
+function countIntents(f: Awaited<ReturnType<typeof inspector>>) {
+  const intents: unknown[] = [];
+  const enqueue = f.controller.enqueue.bind(f.controller);
+  f.controller.enqueue = (intent) => {
+    intents.push(intent);
+    return enqueue(intent);
+  };
+  return intents;
+}
+
+test("chain rows stage efforts in memory: eligible-only, same-model skip, discard paths and one replace-target per save", async (t) => {
+  const f = await inspector(t, {
+    general: { models: [cLow, a, cHigh], fallback: [cLow, a, cHigh] },
+  });
+  f.setMetadata(withC);
+  const intents = countIntents(f);
+  f.open("Models");
+  const panel = f.render();
+  assert.match(panel, /Models · override/);
+  assert.match(panel, /❯ fixture\/c +◔ low │/);
+  assert.match(panel, /│ {3}↳ fixture\/a:off +│/);
+  assert.match(panel, /│ {3}↳ fixture\/c:high +│/);
+  assert.match(panel, /\+ Add fallback…[^\n]*\n[^\n]*─{20}[^\n]*\n[^\n]*Disable chain/);
+  assert.match(panel, /Friendly Gamma · fixture\/c · low/);
+  assert.match(
+    panel,
+    /⏎ replace · ←\/→ effort · ⇧↑\/↓ \[ \] move · x remove · f add · ⎋\/ctrl\+c back/,
+  );
+  f.input(right);
+  assert.match(f.render(), /❯ fixture\/c +\[◑ medium\] · unsaved · adds grant │/);
+  assert.match(
+    f.render().replace(/[│\s]+/g, " "),
+    /Unsaved effort low → medium · adds exact grant/,
+  );
+  assert.match(f.render(), /⏎ save effort · ←\/→ effort · ⎋\/ctrl\+c discard/);
+  f.input(right); // high is routed by fallback 2, so medium stays the last choice.
+  assert.match(f.render(), /\[◑ medium\]/);
+  f.input(left);
+  assert.doesNotMatch(f.render(), /unsaved/, "returning to the saved effort stages nothing");
+  f.input(left); // minimal is ineligible in this session.
+  assert.match(f.render(), /\[⦸ off\] · unsaved · adds grant/);
+  f.input("\x1b");
+  assert.doesNotMatch(f.render(), /unsaved/);
+  assert.match(f.render(), /Models · override/, "Escape with a preview only discards it");
+  f.input(right, "down");
+  assert.doesNotMatch(f.render(), /unsaved/);
+  f.input("up", right, "1");
+  f.open("Models");
+  assert.doesNotMatch(f.render(), /unsaved/, "group jumps discard");
+  f.input(right, "\t", "down", "up", "\t");
+  assert.doesNotMatch(f.render(), /unsaved/, "profile switches discard");
+  f.input(right, "f");
+  assert.match(f.render(), /Adding to general chain/);
+  f.input("\x1b");
+  assert.doesNotMatch(f.render(), /unsaved/, "opening the picker discards");
+  assert.equal(intents.length, 0);
+  f.input("\x1b");
+  assert.match(f.render(), /› Models/, "Escape without a preview returns to the overview");
+  f.open("Models");
+  f.input(right, "\r");
+  await f.controller.settled();
+  assert.deepEqual(intents, [
+    {
+      destination: "global",
+      profile: "general",
+      field: "fallback",
+      action: "replace-target",
+      target: cLow,
+      replacement: { ...cLow, effort: "medium" },
+    },
+  ]);
+  const saved = (await f.disk()).general;
+  assert.deepEqual(saved.fallback, [{ ...cLow, effort: "medium" }, a, cHigh]);
+  assert.deepEqual(saved.models, [cLow, a, cHigh, { ...cLow, effort: "medium" }]);
+  assert.match(f.render(), /❯ fixture\/c +◑ medium │/, "selection follows the replacement");
+  f.input("down", "down", left); // medium is now routed by the default, so low is next.
+  assert.match(
+    f.render(),
+    /❯ ↳ fixture\/c:high +\[◔ low\] · unsaved │/,
+    "granted: no grant notice",
+  );
+});
+
+test("chain row keys move, remove and refuse at boundaries; unavailable rows stay movable/removable", async (t) => {
+  const f = await inspector(t, { general: { models: [cLow, a, b], fallback: [cLow, a, b] } });
+  f.setMetadata(withC);
+  const intents = countIntents(f);
+  f.open("Models");
+  f.input(shiftUp);
+  assert.match(f.render(), /Already first/);
+  f.input("]");
+  await f.controller.settled();
+  assert.deepEqual((await f.disk()).general.fallback, [a, cLow, b]);
+  assert.match(f.render(), /❯ ↳ fixture\/c:low/, "selection follows the moved target");
+  f.setMetadata({ entries: models.entries });
+  assert.match(f.render(), /❯ ↳ fixture\/c:low ⚠ unavailable/);
+  f.input(right);
+  assert.match(f.render(), /Unavailable in accessible catalog/);
+  f.input(shiftDown);
+  await f.controller.settled();
+  assert.deepEqual((await f.disk()).general.fallback, [a, b, cLow]);
+  f.input(shiftDown);
+  assert.match(f.render(), /Already last/);
+  assert.doesNotMatch(f.render(), /x saves fallback:false/);
+  f.input("x");
+  await f.controller.settled();
+  assert.deepEqual((await f.disk()).general.fallback, [a, b]);
+  assert.match(f.render(), /❯ \+ Add fallback…/, "selection moves to the add row after the last");
+  f.go("fixture/a");
+  f.input("\x1b[3~");
+  await f.controller.settled();
+  assert.match(f.render(), /❯ fixture\/b +◕ high/, "selection moves to the next row");
+  assert.match(f.render(), /x saves fallback:false\. Keeps exact model grants\. Disables fallback/);
+  f.input("x");
+  await f.controller.settled();
+  assert.equal((await f.disk()).general.fallback, false);
+  assert.deepEqual((await f.disk()).general.models, [cLow, a, b]);
+  assert.match(f.render(), /— unchained → selected parent model/);
+  assert.equal(intents.length, 5);
+});
+
+test("Enter replaces a chain target in place through the picker with any accessible selection not in the chain", async (t) => {
+  const f = await inspector(t, { general: { models: [a, b], fallback: [a, b] } });
+  f.setMetadata(withC);
+  const intents = countIntents(f);
+  f.open("Models");
+  f.go("↳ fixture/b:high");
+  f.input(right, "\r");
+  const picker = f.render();
+  assert.match(picker, /Replacing fallback 1 in general/);
+  assert.doesNotMatch(picker, /unsaved/);
+  // Granted models first; b's only effort is already routed, so it is hidden.
+  assert.match(picker, /❯ fixture\/a[^\n]*\n[^\n]*─{20}[^\n]*\n[^\n]*fixture\/c/);
+  assert.match(picker, /1 model hidden: already present/);
+  f.input("\r");
+  assert.match(f.render(), /Effort: ⦸ off  \[◕ high\]/, "a:off is already in the chain");
+  f.input("\x1b", "\x1b");
+  assert.match(f.render(), /❯ ↳ fixture\/b:high/);
+  assert.equal(intents.length, 0);
+  f.input("\r", "gamma", "\r");
+  // A different model keeps the replaced target's effort level (high) when eligible there.
+  assert.match(f.render(), /Effort: .*\[◕ high\]/);
+  f.input(left);
+  assert.match(f.render(), /Effort: .*\[◑ medium\]/);
+  assert.match(f.render(), /Replace in place and grant/);
+  f.input("\r");
+  await f.controller.settled();
+  const medium = { ...cLow, effort: "medium" as const };
+  assert.deepEqual(intents, [
+    {
+      destination: "global",
+      profile: "general",
+      field: "fallback",
+      action: "replace-target",
+      target: b,
+      replacement: medium,
+    },
+  ]);
+  assert.deepEqual((await f.disk()).general.fallback, [a, medium]);
+  assert.deepEqual((await f.disk()).general.models, [a, b, medium]);
+  assert.match(f.render(), /❯ ↳ fixture\/c:medium/);
+  f.input("up", "\r");
+  assert.match(f.render(), /Replacing default in general/);
+});
+
+test("64 grants limit staged efforts and replacement to existing grants", async (t) => {
+  const fillers = Array.from({ length: 62 }, (_, i) => ({
+    provider: "fixture",
+    id: `filler-${i}`,
+    effort: "off" as const,
+  }));
+  const cOff = { ...cLow, effort: "off" as const };
+  const f = await inspector(t, { general: { models: [cLow, cOff, ...fillers], fallback: [cLow] } });
+  f.setMetadata(withC);
+  f.open("Models");
+  f.input(right);
+  assert.doesNotMatch(f.render(), /unsaved/, "medium/high would need a 65th grant");
+  f.input(left);
+  assert.match(f.render(), /\[⦸ off\] · unsaved │/);
+  f.input("\r");
+  await f.controller.settled();
+  assert.deepEqual((await f.disk()).general.fallback, [cOff]);
+  assert.equal((await f.disk()).general.models.length, 64);
+  f.input("\r");
+  assert.match(f.render(), /Replacing default in general/);
+  assert.match(f.render(), /❯ fixture\/c/);
+  f.input("\r");
+  // off is the routed target; the still-granted low is preselected so no grant is needed.
+  assert.match(f.render(), /Effort: ⦸ off  ◌ minimal  \[◔ low\]/);
+  f.input(right);
+  assert.match(f.render(), /Not authorized by exact grants/);
+  f.input("\x1b", "\x1b");
+  assert.equal(f.controller.pending.length, 0);
+});
+
+test("64 chain targets disable add from any row; Project destination refuses every non-removal key with today's reasons", async (t) => {
+  const targets = Array.from({ length: 64 }, (_, i) => ({
+    provider: "fixture",
+    id: `t${i}`,
+    effort: "off" as const,
+  }));
+  const f = await inspector(t, { general: { models: targets, fallback: targets } });
+  f.open("Models");
+  f.input("f");
+  assert.match(f.render(), /Maximum 64 chain targets/);
+  assert.doesNotMatch(f.render(), /🔍/);
+  const p = await inspector(t, { general: { models: [a, b], fallback: [a, b] } }, {}, "project");
+  p.setMetadata(models);
+  const intents = countIntents(p);
+  p.open("Models");
+  for (const [key, reason] of [
+    [right, "Project cannot choose a different exact target"],
+    [left, "Project cannot choose a different exact target"],
+    ["\r", "Project cannot choose a different exact target"],
+    [shiftDown, "Operator order only; change to Global"],
+    ["]", "Operator order only; change to Global"],
+    ["f", "Change destination to Global; inherited prewalk cannot be bypassed"],
+  ]) {
+    p.input(key);
+    assert.match(p.render().replace(/[│\s]+/g, " "), new RegExp(reason), key);
+    assert.doesNotMatch(p.render(), /unsaved|🔍/);
+  }
+  assert.equal(intents.length, 0);
+  p.input("x");
+  await p.controller.settled();
+  assert.equal(intents.length, 1);
+  assert.deepEqual(JSON.parse(await fs.readFile(p.projectPath, "utf8")).general.fallback, [b]);
+});
+
+test("unchained placeholder and prewalk compound add label; Models bounds at 72×25, 72×21 and 120×36", async (t) => {
+  const f = await inspector(t, { general: { model: b, models: [a, b], prewalk: a } });
+  f.open("Models");
+  assert.match(
+    f.render().replace(/[│\s]+/g, " "),
+    /— unchained → fixture\/b:high · prewalk fixture\/a:off configured · current permissions may deny dispatch/,
+  );
+  assert.match(f.render(), /❯ \+ Switch from prewalk and add…/);
+  f.input("f");
+  assert.match(f.render(), /Switching general from prewalk/);
+  f.input("\x1b");
+  const g = await inspector(t, { general: { models: [cLow, a, b], fallback: [cLow, a, b] } });
+  g.setMetadata(withC);
+  for (const [width, height] of [
+    [72, 25],
+    [72, 21], // Production 80×24 overlay.
+    [120, 36],
+  ]) {
+    g.resize(width, height);
+    g.open("Models");
+    g.input(right); // render() checks bounds() for every frame.
+    const frame = g.render();
+    assert.match(frame, /❯ fixture\/c +\[◑ medium\] · unsaved · adds grant/);
+    assert.match(frame, /↳ fixture\/b:high/);
+    assert.match(frame, /⏎ save effort/);
+    g.input("\x1b");
+    assert.match(g.render(), /x remove · f add/);
+  }
 });
