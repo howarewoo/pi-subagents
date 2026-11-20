@@ -18,9 +18,11 @@ Branch `feat/model-picker`, based on `main` at
   output limit, price, reasoning, vision) is checked against the SDK `fauxProvider` shape
   and omitted when unknown.
 - Plain and themed `render()` captures at **120×36**, **80×24** and **68×14** use
-  multi-provider fixture data. They are component output, not a terminal-emulator
-  screen: whether 🧠 and the effort glyphs occupy their measured width in a given
-  terminal was not observed.
+  multi-provider fixture data. Themed captures at 120×36 and 80×24 were also rendered in
+  xterm.js 5.5 (Unicode 11 width tables) in a headless browser: 🧠 occupied two cells,
+  the effort glyphs one cell each, and the context/price columns stayed aligned. Native
+  terminals (iTerm2, Ghostty, Terminal.app) and CJK ambiguous-width settings were not
+  checked.
 
 # Combined acceptance follow-up
 

@@ -76,9 +76,20 @@ export function profileEffortLabel(effort: ModelSelection["effort"]): string {
 /** Token counts as `1m`, `500k`, `8.2k`; unknown or non-positive counts render blank. */
 export function profileTokenCount(tokens: number | undefined): string {
   if (!tokens || !Number.isFinite(tokens) || tokens <= 0) return "";
-  const [value, unit] =
-    tokens >= 1e6 ? [tokens / 1e6, "m"] : tokens >= 1e3 ? [tokens / 1e3, "k"] : [tokens, ""];
-  return `${value < 10 ? Number(value.toFixed(1)) : Math.round(value)}${unit}`;
+  const units = [
+    [1, ""],
+    [1e3, "k"],
+    [1e6, "m"],
+  ] as const;
+  const rounded = (scale: number) => {
+    const value = tokens / scale;
+    return value < 10 ? Number(value.toFixed(1)) : Math.round(value);
+  };
+  // Pick the unit after rounding so 999,500 becomes `1m`, not `1000k`.
+  let index = tokens >= 1e6 ? 2 : tokens >= 1e3 ? 1 : 0;
+  if (index < 2 && rounded(units[index][0]) >= 1000) index++;
+  const [scale, unit] = units[index];
+  return `${rounded(scale)}${unit}`;
 }
 
 /** `$input/output` per million tokens; all-zero cost is `$0` because zero may mean unknown. */
