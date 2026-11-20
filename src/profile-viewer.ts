@@ -8,12 +8,14 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   profileCell as cell,
+  profileChainRow,
   profileRowPaint,
   profileSettingLines,
   type ProfilePanelTheme,
 } from "./profile-presentation.ts";
 import {
   profileOverview,
+  profileOverviewValue,
   profileSettingLabels,
   profileSettingHelp,
   profileRawRole,
@@ -41,9 +43,15 @@ export async function resolvedProfiles(
   return resolvedCatalogProfiles(cwd, trusted, operatorDir, availableSkills);
 }
 
-type DetailLine = { text: string; heading?: boolean };
+/** `line` is pre-rendered and already fits the detail width. */
+type DetailLine = { text: string; heading?: boolean; line?: string };
 
-function details(profile: Profile, panel: ProfileSetting): DetailLine[] {
+function details(
+  profile: Profile,
+  panel: ProfileSetting,
+  theme: ProfilePanelTheme,
+  width: number,
+): DetailLine[] {
   const list = (items: readonly string[] | undefined) =>
     items?.length ? items.join(", ") : "none";
   const known = new Set([
@@ -87,11 +95,10 @@ function details(profile: Profile, panel: ProfileSetting): DetailLine[] {
       heading("Models"),
       value("Default and ordered fallbacks (routing, not grants)"),
       ...(profile.fallback?.length
-        ? profile.fallback.map((target, index) =>
-            value(
-              `${index === 0 ? "Default" : `  ↳ Fallback ${index}`}: ${target.provider}/${target.id} · ${target.effort}`,
-            ),
-          )
+        ? profile.fallback.map((target, index) => ({
+            text: "",
+            line: profileChainRow(theme, target, index, width),
+          }))
         : [
             value(
               `No chain · ${profile.prewalk ? `Prewalk: ${profile.prewalk.provider}/${profile.prewalk.id} · ${profile.prewalk.effort}` : "Advanced default / selected parent model route applies."}`,
@@ -249,7 +256,7 @@ export function createProfileViewer(
           ];
       const content = profile
         ? [
-            ...details(profile, panel ?? "description"),
+            ...details(profile, panel ?? "description", theme, rightWidth),
             ...(panel === "advanced"
               ? [
                   { text: "" },
@@ -304,7 +311,8 @@ export function createProfileViewer(
       if (profile && (visibleWidth(name) > rightWidth || profile.name.includes("\n")))
         content.unshift({ text: profile.name });
 
-      let lines = content.flatMap(({ text, heading }) => {
+      let lines = content.flatMap(({ text, heading, line }) => {
+        if (line) return [line];
         const wrappedLines = safe(text)
           .split("\n")
           .flatMap((line) =>
@@ -349,7 +357,7 @@ export function createProfileViewer(
             ...profileSettingLines(
               theme,
               profileSettingLabels[key],
-              safe(item.value),
+              profileOverviewValue(theme, item),
               rightWidth,
               key === setting && focus === "settings",
               metadata(key),
@@ -369,7 +377,7 @@ export function createProfileViewer(
             ? profileSettingLines(
                 theme,
                 profileSettingLabels[item.key],
-                safe(item.value),
+                profileOverviewValue(theme, item),
                 rightWidth,
                 false,
                 metadata(item.key),

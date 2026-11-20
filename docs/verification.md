@@ -1,3 +1,47 @@
+# Model chain editor verification
+
+Branch `feat/model-chain-editor`, based on the model picker branch at
+`5e1405bc742b16f79d42254a9733b9c3454d4fb9`. Historical records below are preserved.
+
+- `npm run check`: lint, formatting and strict typecheck pass; **554/554 tests**, no
+  failures/skips/cancellations; controlled SDK exercise prints PASS. An earlier aggregate run
+  failed three timing-sensitive tests in untouched files (`cli`, `compatibility`,
+  `model-fallback`); those files passed **47/47** alone.
+- Editable Inspector tests drive the Models panel through real autosave on temporary config
+  files. They cover the row format (default `provider/id` with its effort right-aligned,
+  `↳ provider/id:effort` fallbacks, `❯` selection, `⚠ unavailable` suffix) and each row key.
+  ←/→ visits only supported, eligible efforts, skips efforts another chain row uses and, at 64
+  grants, offers only granted efforts. Escape, moving the selection, group jumps, profile
+  switches and opening the picker discard a preview with no intent. Enter saves exactly one
+  `replace-target`, which adds at most one grant. Enter with nothing previewed replaces in place
+  through the picker, where any accessible selection not already in the chain is eligible.
+  Shift+↑/↓ and `[`/`]` move with the selection following, with **Already first/last** at the
+  ends. `x`/Delete remove, and the final target's row discloses `fallback:false` before the key
+  is pressed. `f` adds, and the prewalk compound label is kept. Unavailable rows stay movable and
+  removable, and a clipped long identity stays readable with j/k. Project refuses every key except
+  removal with the existing reasons, 64 chain targets disable adding, and paused saves refuse
+  edits. The unchained placeholder is covered too. Frames stay bounded at **72×25, 72×21**
+  (the production 80×24 overlay) and **120×36**. Viewer and overview tests check the same row
+  format and the `provider/id ◔ low · +N fallbacks` summary. When replacing, the picker's
+  effort strip starts on the replaced target's effort level if the chosen model supports it
+  eligibly, then on an already-granted effort, then on the first eligible one; picker and
+  replace-flow tests cover keeping the level on a different model.
+- Combined-flow captures (overview → Models → add → effort change → replace → reorder →
+  remove) at **120×36** and **80×24**, drawn at the production 90% overlay size, in a plain
+  palette and the bundled dark theme. The themed frames were replayed in xterm.js 5.5 with
+  Unicode 11 widths in headless Chromium. That is one terminal emulator, not the native
+  terminals people use, so glyph width there remains unobserved.
+- Comparison with the reference chain and selector screenshots, element by element:
+  - Matched: chain rows with the effort right-aligned and `↳ provider/id:effort` children; the
+    muted `provider/`, bright id and accent `❯`; `+ Add fallback…` with a divider; the
+    `— unchained →` placeholder; bottom key hints; picker title, provider tabs, `🔍 >` search,
+    metadata columns, granted-first divider, detail footer and effort strip.
+  - Plan-authorized deviations: the staged effort shows inline on the row (D5) instead of
+    a separate strip, and the divider sits below the add row (F1).
+  - The overview Models summary uses the same muted `provider/` and bright id.
+- `docs/images/subagent-profiles.svg` is unchanged: the bundled profiles it renders have no
+  chain, so their overview text is the same.
+
 # Model picker verification
 
 Branch `feat/model-picker`, based on `main` at

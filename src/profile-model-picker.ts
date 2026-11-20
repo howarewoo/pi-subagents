@@ -12,6 +12,7 @@ import {
 import {
   profileCell,
   profileEffortLabel,
+  profileKeyText,
   profileModelIdentity,
   profilePrice,
   profileRowPaint,
@@ -34,7 +35,6 @@ const unavailable: ProfileModelCatalog = {
   error: "Model metadata is unavailable. No manual ID entry; saved selections are retained.",
 };
 const accessible = "Accessible in this session; profile authorization remains separate.";
-const keyGlyphs: Record<string, string> = { enter: "⏎", escape: "⎋" };
 
 /**
  * One metadata snapshot per opening; ^R rereads it. Search (native Input) always has focus while
@@ -70,13 +70,7 @@ export function createProfileModelPicker(
   let detailMaximum = 0;
   let detailViewport = 1;
   let notice = "";
-  const keyText = (action: Parameters<typeof keys.getKeys>[0]) =>
-    safe(
-      keys
-        .getKeys(action)
-        .map((key) => keyGlyphs[key] ?? key)
-        .join("/") || "unbound",
-    );
+  const keyText = (action: Parameters<typeof keys.getKeys>[0]) => profileKeyText(keys, action);
   const pickReason = (entry: ProfileModelEntry, value: ModelSelection["effort"]) =>
     profileModelPickReason(
       catalog,
@@ -106,8 +100,13 @@ export function createProfileModelPicker(
   };
   const openEfforts = (entry: ProfileModelEntry) => {
     const allowed = entry.efforts.filter(({ effort }) => !pickReason(entry, effort));
-    // Prefer an effort that already has an exact grant so choosing it adds none.
-    effort = (allowed.find(({ effort }) => granted(entry, effort)) ?? allowed[0])?.effort;
+    // Keep a replaced target's effort level, else prefer an effort that already has an exact
+    // grant so choosing it adds none.
+    effort = (
+      allowed.find(({ effort }) => effort === options.preferredEffort) ??
+      allowed.find(({ effort }) => granted(entry, effort)) ??
+      allowed[0]
+    )?.effort;
   };
   let renderWidth = 0;
   const component: Component & Focusable = {

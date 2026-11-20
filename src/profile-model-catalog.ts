@@ -27,6 +27,8 @@ export type ProfileModelPickOptions = {
   selectionLabel?: string;
   /** Models with any of these exact selections are listed first, above a divider. */
   prioritized?: readonly ModelSelection[];
+  /** Effort the strip starts on when eligible for the chosen model (a replaced target's level). */
+  preferredEffort?: ModelSelection["effort"];
   /** Undefined allows any accessible selection; [] permits none. Never creates grants. */
   allowed?: readonly ModelSelection[];
   excluded?: readonly ModelSelection[];

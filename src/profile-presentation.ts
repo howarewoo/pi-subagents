@@ -6,8 +6,10 @@ import {
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
+  type KeybindingsManager,
 } from "@earendil-works/pi-tui";
 import type { ModelSelection } from "./model-policy.ts";
+import { safe } from "./thread.ts";
 
 export type ProfilePanelTheme = Pick<Theme, "fg" | "style"> & {
   colors: Pick<Theme["colors"], "customMessageBg">;
@@ -123,4 +125,51 @@ export function profileModelIdentity(
     theme.fg("muted", `${clip(provider, providerRoom)}/`) +
     theme.fg(idColor, clip(id, width - providerRoom - 1))
   );
+}
+
+const keyGlyphs: Readonly<Record<string, string>> = { enter: "⏎", escape: "⎋" };
+
+/** A binding's keys for hints, with Enter/Escape as glyphs. */
+export function profileKeyText(
+  keys: Pick<KeybindingsManager, "getKeys">,
+  action: Parameters<KeybindingsManager["getKeys"]>[0],
+): string {
+  return safe(
+    keys
+      .getKeys(action)
+      .map((key) => keyGlyphs[key] ?? key)
+      .join("/") || "unbound",
+  );
+}
+
+/**
+ * One chain row: the default shows its effort right-aligned, fallbacks read `↳ provider/id:effort`.
+ * The first column holds the `❯` selection marker (blank when read-only); `right` replaces the
+ * default's effort column (e.g. a staged effort) and `warning` is a short suffix after the id.
+ */
+export function profileChainRow(
+  theme: Pick<ProfilePanelTheme, "fg">,
+  target: ModelSelection,
+  index: number,
+  width: number,
+  {
+    selected = false,
+    warning = "",
+    right,
+  }: { selected?: boolean; warning?: string; right?: string } = {},
+): string {
+  const color = selected ? "accent" : "text";
+  const lead = `${selected ? theme.fg("accent", "❯") : " "} ${index ? theme.fg("muted", "↳ ") : ""}`;
+  const tail = index ? theme.fg(color, `:${target.effort}`) : "";
+  const suffix = warning ? theme.fg("warning", ` ⚠ ${warning}`) : "";
+  const column = right ?? (index ? "" : theme.fg("muted", profileEffortLabel(target.effort)));
+  const fixed =
+    visibleWidth(lead) +
+    visibleWidth(tail) +
+    visibleWidth(suffix) +
+    (column ? visibleWidth(column) + 2 : 0);
+  const left = `${lead}${profileModelIdentity(theme, safe(target.provider), safe(target.id), Math.max(3, width - fixed), color)}${tail}${suffix}`;
+  return column
+    ? `${left}${" ".repeat(Math.max(2, width - visibleWidth(left) - visibleWidth(column)))}${column}`
+    : left;
 }
