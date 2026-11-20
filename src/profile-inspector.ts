@@ -353,7 +353,18 @@ export function createEditableProfileInspector(
     child = createProfileModelPicker(
       options.modelCatalog,
       {
-        title: `${name} · ${action === "switch-from-prewalk" ? "Switch from prewalk and add" : action === "switch-from-fallback" ? "Disable fallback and select prewalk" : field}`,
+        title:
+          action === "add"
+            ? `Adding to ${name} chain`
+            : action === "switch-from-prewalk"
+              ? `Switching ${name} from prewalk and adding to chain`
+              : action === "replace-target" && target
+                ? `Changing effort of ${target.provider}/${target.id} in ${name} chain`
+                : action === "grant"
+                  ? `Granting exact model to ${name}`
+                  : action === "switch-from-fallback"
+                    ? `Disabling ${name} fallback and choosing prewalk`
+                    : `Choosing ${name} ${field}`,
         context: [
           destination === "global"
             ? "Global · affects other workspaces"
@@ -389,6 +400,7 @@ export function createEditableProfileInspector(
                     ? [profile.prewalk]
                     : []
                   : (profile.models ?? []),
+        prioritized: field === "fallback" ? profile.models : undefined,
         excluded:
           field === "fallback"
             ? profile.fallback
@@ -1393,7 +1405,7 @@ export function createEditableProfileInspector(
           child
             ? textEdit
               ? `${!mutable() ? "Paused · Tab: keep draft" : textEdit.input instanceof Input ? `${submit} / Tab: commit` : `${submit}: commit · Tab: keep draft`} · ${cancel}: discard text`
-              : `Catalog · Tab focus · ${cancel}: back`
+              : `Catalog · ${cancel}: back`
             : decision
               ? `↑↓ choose · ${confirm} select · ${cancel} keep drafts`
               : hint,

@@ -22,6 +22,13 @@ import {
   type ProfileModelPickOptions,
 } from "../src/profile-model-catalog.ts";
 import { createProfileModelPicker } from "../src/profile-model-picker.ts";
+import {
+  PROFILE_EFFORT_GLYPHS,
+  profileEffortLabel,
+  profileModelIdentity,
+  profilePrice,
+  profileTokenCount,
+} from "../src/profile-presentation.ts";
 import { EFFORTS, type ModelSelection } from "../src/model-policy.ts";
 
 const keys = {
@@ -35,7 +42,8 @@ const keys = {
         "tui.select.down": "down",
       } as Record<string, string>
     )[action],
-  getKeys: () => ["escape" as const],
+  getKeys: (action: string) =>
+    action === "tui.select.confirm" ? ["enter" as const] : ["escape" as const],
 };
 const theme = {
   fg: (_name: string, text: string) => text,
@@ -70,7 +78,7 @@ const options: ProfileModelPickOptions = {
   context: ["Global: /fixture/delegation.json"],
 };
 const plain = (text: string) =>
-  stripVTControlCharacters(text.replaceAll("\x1b_pi:fc\x07", "").replaceAll("\x1b_pi:/fc\x07", ""));
+  stripVTControlCharacters(text.replaceAll(/\x1b_pi:[^\x07]*\x07/g, ""));
 
 function picker(source: () => ProfileModelCatalog = () => catalog, opts = options) {
   let result: ModelSelection | undefined;
@@ -139,95 +147,182 @@ test("authorization, duplicate identity and scope are independent, including emp
   assert.match(profileModelPickReason(catalog, b, { ...options, allowed: [b] })!, /scope/);
 });
 
-test("picker requires an explicitly chosen supported effort, respects disabled efforts and rechecks local metadata", () => {
+const F1 = "\x1bOP";
+const right = "\x1b[C";
+const altRight = "\x1bf";
+const altLeft = "\x1bb";
+const ctrlR = "\x12";
+const three: ProfileModelCatalog = {
+  entries: [
+    { ...catalog.entries[0], id: "first", name: "First", efforts: [{ effort: "off" }] },
+    {
+      ...catalog.entries[0],
+      id: "granted",
+      name: "Granted",
+      efforts: [{ effort: "off" }, { effort: "high" }],
+    },
+    { ...catalog.entries[0], id: "third", name: "Third", efforts: [{ effort: "off" }] },
+  ],
+};
+
+test("typing always searches, including literal j/k/? and paste; arrows move the text cursor", () => {
+  const p = picker();
+  for (const key of ["j", " ", "k", "?"]) p.send(key);
+  assert.match(p.render(), /🔍 > j k\?/);
+  assert.match(p.render(), /No matching models/);
+  assert.equal(p.finished, false);
+  for (let i = 0; i < 4; i++) p.send("\x7f");
+  p.send("\x1b[200~Custom Company\x1b[201~");
+  assert.match(p.render(), /❯ custom\/opaque-1/);
+  p.send("\x1b[D", "\x1b[D", "X");
+  assert.match(p.render(), /🔍 > Custom CompaXny/);
+  assert.doesNotMatch(p.render(), /Effort:/);
+});
+
+test("granted models list first above a divider and ↑/↓ crosses it; other modes have no divider", () => {
+  const p = picker(() => three, {
+    ...options,
+    prioritized: [{ provider: "custom", id: "granted", effort: "high" }],
+  });
+  assert.match(
+    p.render(),
+    /❯ custom\/granted *\n ─{20}[^\n]*\n {2}custom\/first *\n {2}custom\/third/,
+  );
+  p.send("down");
+  assert.match(p.render(), /\n❯ custom\/first/);
+  p.send("down", "down");
+  assert.match(p.render(), /\n❯ custom\/third/);
+  p.send("up", "up", "up");
+  assert.match(p.render(), /\n❯ custom\/granted/);
+  // Enter preselects the effort that already has a grant, so choosing it adds none.
+  p.send("enter");
+  assert.match(p.render(), /Effort: ⦸ off {2}\[◕ high\]/);
+  p.send("enter");
+  assert.deepEqual(p.result, { provider: "custom", id: "granted", effort: "high" });
+  assert.doesNotMatch(picker(() => three).render(), /─{20}/);
+});
+
+test("provider tabs switch with alt+arrows and Tab/Shift+Tab without selecting", () => {
+  const p = picker(() => ({
+    entries: [...three.entries, { ...catalog.entries[1], efforts: [{ effort: "off" }] }],
+  }));
+  assert.match(p.render(), /Provider: ◀ all ▶ {2}custom {2}other/);
+  p.send(altRight);
+  assert.match(p.render(), /Provider: all {2}◀ custom ▶ {2}other/);
+  assert.doesNotMatch(p.render(), /other\/opaque-2/);
+  p.send("\t");
+  assert.match(p.render(), /◀ other ▶/);
+  assert.match(p.render(), /❯ other\/opaque-2/);
+  assert.doesNotMatch(p.render(), /custom\/first/);
+  p.send("\x1b[Z", altLeft);
+  assert.match(p.render(), /◀ all ▶/);
+  p.send(altLeft);
+  assert.match(p.render(), /◀ other ▶/);
+  assert.equal(p.finished, false);
+});
+
+test("Enter opens the effort strip, Enter on an eligible effort rechecks a fresh snapshot and completes", () => {
   let reads = 0;
   const p = picker(() => {
     reads++;
     return catalog;
   });
-  p.send("enter", "enter", "enter", "enter");
+  assert.doesNotMatch(p.render(), /Effort:/);
+  p.send("enter");
+  assert.match(p.render(), /Effort: \[⦸ off\] {2}◕ high/);
+  assert.match(p.render(), /Accessible in this session/);
+  assert.match(
+    p.render(),
+    /←\/→ effort · ⏎ select \(no automatic grants\) · F1 details · ⎋ back to list/,
+  );
   assert.equal(p.finished, false);
-  p.send("\x1b[Z", "\x1b[C", "enter", "enter");
+  p.send("enter");
   assert.deepEqual(p.result, a);
   assert.equal(reads, 2);
-  const denied = picker();
-  denied.send("enter", "enter", "\x1b[C", "\x1b[C", "enter", "enter");
-  assert.equal(denied.finished, false);
-  assert.match(denied.render(), /Outside current session/);
-  const stale = picker(() => (reads++ === 2 ? catalog : { entries: [] }));
-  stale.send("enter", "enter", "\x1b[C", "enter", "enter");
-  assert.equal(stale.finished, false);
 });
 
-test("picker native search accepts printable j/k and paste, provider filtering and explicit Refresh do not select", () => {
+test("ineligible efforts stay inspectable with their exact reason and never complete", () => {
+  const p = picker();
+  p.send("enter", right);
+  assert.match(p.render(), /Effort: ⦸ off {2}\[◕ high\]/);
+  assert.match(p.render(), /Outside current session model\/effort scope/);
+  p.send("enter");
+  assert.equal(p.finished, false);
+  assert.match(p.render(), /Outside current session model\/effort scope/);
+  p.send(right);
+  assert.match(p.render(), /\[◕ high\]/, "the strip stops at the last effort");
+  p.send("\x1b[D", "enter");
+  assert.deepEqual(p.result, a);
+});
+
+test("Escape peels details, then the effort strip, then cancels; typing or ↑/↓ leaves the strip", () => {
+  const p = picker();
+  p.send("F", "enter", F1);
+  assert.match(p.render(), /Model details/);
+  p.send("esc");
+  assert.match(p.render(), /Effort: \[⦸ off\]/);
+  p.send("esc");
+  assert.doesNotMatch(p.render(), /Effort:/);
+  assert.match(p.render(), /🔍 > F/);
+  assert.match(p.render(), /❯ custom\/opaque-1/);
+  p.send("enter", "r");
+  assert.doesNotMatch(p.render(), /Effort:/);
+  assert.match(p.render(), /🔍 > Fr/);
+  p.send("enter", "down");
+  assert.doesNotMatch(p.render(), /Effort:/);
+  assert.equal(p.finished, false);
+  p.send("esc");
+  assert.equal(p.finished, true);
+  assert.equal(p.result, undefined);
+});
+
+test("F1 details keep exact metadata, scroll with j/k and never accept", () => {
+  const p = picker();
+  p.send("enter", F1);
+  const details = p.render();
+  for (const text of [
+    "ID: custom/opaque-1",
+    "· high — Outside current session",
+    "Selected effort: off",
+    "^R refresh rereads the host snapshot only",
+    "Hidden matching models (exact reasons)",
+    "ID: other/opaque-2",
+  ])
+    assert.ok(details.includes(text), text);
+  p.send("enter", " ", "j", "k");
+  assert.equal(p.finished, false);
+  assert.match(p.render(), /Model details/);
+  p.send(F1);
+  assert.match(p.render(), /Effort: \[⦸ off\]/);
+});
+
+test("ctrl+r rereads only the snapshot, resets a vanished provider and the selection", () => {
   let reads = 0;
+  let current: ProfileModelCatalog = three;
   const p = picker(() => {
     reads++;
-    return catalog;
+    return current;
   });
-  p.send("j");
-  assert.match(p.render(), /No matching models/);
-  p.send("\x7f", "\x1b[200~Custom Company\x1b[201~");
-  assert.match(p.render(), /1 matches/);
-  p.send("\t", "\x1b[C");
-  assert.match(p.render(), /Provider: Custom Company/);
-  p.send("\t", "\t", "\t", "\t", "enter");
+  p.send("down", "down", "enter");
+  assert.match(p.render(), /❯ custom\/third/);
+  p.send(ctrlR);
   assert.equal(reads, 2);
+  assert.match(p.render(), /❯ custom\/first/);
+  assert.match(p.render(), /Reread the host model snapshot; no network refresh/);
+  assert.doesNotMatch(p.render(), /Effort:/);
+  p.send(altRight);
+  assert.match(p.render(), /◀ custom ▶/);
+  current = { entries: [{ ...catalog.entries[1], efforts: [{ effort: "off" }] }] };
+  p.send(ctrlR);
+  assert.match(p.render(), /◀ all ▶/);
+  assert.match(p.render(), /❯ other\/opaque-2/);
   assert.equal(p.finished, false);
-  assert.match(p.render(), /not chosen/);
 });
 
-test("arrows enter eligible results directly from Search without skipping the first model or choosing effort", () => {
-  const last = {
-    ...catalog.entries[0],
-    id: "last",
-    name: "Last Model",
-    efforts: [{ effort: "off" as const }],
-  };
-  const p = picker(() => ({ entries: [...catalog.entries, last] }));
-  assert.doesNotMatch(p.render(), /Second Model/);
-  assert.match(p.render(), /1 model hidden: session scope/);
-  p.send("down");
-  assert.match(p.render(), /› Friendly Model/);
-  p.send("down");
-  assert.match(p.render(), /› Last Model/);
-  p.send("up");
-  assert.match(p.render(), /› Friendly Model/);
-  p.send("down", "enter", "enter", "enter");
-  assert.equal(p.finished, false, "browsing/Enter cannot implicitly choose an effort");
-  p.send("\x1b[Z", "\x1b[C", "enter", "enter");
-  assert.deepEqual(p.result, { provider: last.provider, id: last.id, effort: "off" });
-});
-
-test("hidden-model reasons follow search/provider and exact effort eligibility, including empty efforts", () => {
-  const empty = { ...catalog.entries[0], id: "empty", name: "No efforts", efforts: [] };
-  const source = () => ({ entries: [...catalog.entries, empty] });
-  const p = picker(source, { ...options, allowed: [a], excluded: [a] });
-  assert.doesNotMatch(p.render(), /Friendly Model|Second Model|No efforts/);
-  assert.match(p.render(), /All matching models are hidden/);
-  assert.match(p.render(), /3 models hidden:/);
-  assert.match(p.render(), /already present/);
-  assert.match(p.render(), /no supported efforts/);
-  p.send("Friendly");
-  assert.match(p.render(), /1 model hidden:/);
-  assert.doesNotMatch(p.render(), /no supported efforts/);
-  p.send("\t", "\x1b[C", "\x1b[C");
-  assert.match(p.render(), /No matching models/);
-  assert.doesNotMatch(p.render(), /models? hidden:/);
-  p.send("\t", "down", "enter", "\x1b[C", "enter", "enter");
-  assert.equal(p.finished, false);
-  const partial = picker(() => catalog, { ...options, allowed: [a], excluded: [b] });
-  assert.match(partial.render(), /Friendly Model/);
-  assert.doesNotMatch(partial.render(), /Second Model/);
-  const none = picker(() => catalog, { ...options, allowed: [] });
-  assert.match(none.render(), /exact grants/);
-  assert.match(none.render(), /0 matches/);
-});
-
-test("stale confirmation rebuilds eligible rows, clears effort and explains rejection without saving", () => {
+test("stale confirmation rejects with its reason and returns to the list without saving", () => {
   let current = catalog;
   const p = picker(() => current);
-  p.send("down", "enter", "\x1b[C", "enter");
+  p.send("enter");
   current = {
     entries: catalog.entries.map((entry) => ({
       ...entry,
@@ -239,42 +334,115 @@ test("stale confirmation rebuilds eligible rows, clears effort and explains reje
   };
   p.send("enter");
   assert.equal(p.finished, false);
-  assert.doesNotMatch(p.render(), /Friendly Model/);
+  assert.doesNotMatch(p.render(), /custom\/opaque-1|Effort:/);
   assert.match(p.render(), /Outside current session model\/effort scope/);
-  assert.match(p.render(), /Effort: not chosen/);
   current = catalog;
-  p.send("\t", "enter");
-  assert.match(p.render(), /Friendly Model/);
-  assert.match(p.render(), /Effort: not chosen/);
+  p.send(ctrlR, "enter");
+  assert.match(p.render(), /Effort: \[⦸ off\]/);
   assert.equal(p.finished, false);
 });
 
-test("empty/error/unavailable source states have metadata Refresh/back and never manual-ID fallback", () => {
-  for (const source of [
-    () => ({ entries: [] }),
-    () => ({ entries: [], error: "Controlled metadata error" }),
-    () => {
-      throw new Error("secret host diagnostic");
-    },
-  ]) {
-    const p = picker(source);
-    const text = p.render();
-    assert.match(text, /Refresh metadata/);
-    assert.doesNotMatch(text, /secret host diagnostic/);
-    assert.equal(p.finished, false);
-    p.send("esc");
-    assert.equal(p.finished, true);
-    assert.equal(p.result, undefined);
-  }
+test("hidden-model reasons follow search/provider and exact effort eligibility, including empty efforts", () => {
+  const empty = { ...catalog.entries[0], id: "empty", name: "No efforts", efforts: [] };
+  const source = () => ({ entries: [...catalog.entries, empty] });
+  const p = picker(source, { ...options, allowed: [a], excluded: [a] });
+  assert.doesNotMatch(p.render(), /opaque-1|opaque-2|custom\/empty/);
+  assert.match(p.render(), /All matching models are hidden/);
+  assert.match(p.render(), /3 models hidden:/);
+  assert.match(p.render(), /already present/);
+  assert.match(p.render(), /no supported efforts/);
+  p.send("Friendly");
+  assert.match(p.render(), /1 model hidden:/);
+  assert.doesNotMatch(p.render(), /no supported efforts/);
+  p.send(altRight, altRight);
+  assert.match(p.render(), /No matching models/);
+  assert.doesNotMatch(p.render(), /models? hidden:/);
+  p.send("enter", "enter");
+  assert.equal(p.finished, false);
+  const none = picker(() => catalog, { ...options, allowed: [] });
+  assert.match(none.render(), /exact grants/);
 });
 
-test("picker fits wide/narrow/short/tiny, retains native input/focus and cannot activate invisible choices", () => {
-  const p = picker();
-  p.send("enter", "enter", "\x1b[C", "enter");
+test("short heights shed spacers, then the hidden summary, then the detail line, before results", () => {
+  const many: ProfileModelCatalog = {
+    entries: [
+      ...Array.from({ length: 8 }, (_, index) => ({
+        ...catalog.entries[0],
+        id: `model-${index}`,
+        name: `Model ${index}`,
+        contextWindow: 200_000,
+        efforts: [{ effort: "off" as const }],
+      })),
+      catalog.entries[1],
+    ],
+  };
+  const p = picker(() => many, {
+    ...options,
+    context: Array.from({ length: 11 }, (_, index) => `Disclosure ${index} stays visible`),
+  });
+  const seen = new Set<string>();
+  for (let height = 30; height >= 14; height--) {
+    p.resize(height);
+    const frame = p.render(60);
+    if (/resize/.test(frame)) continue;
+    const summary = /1 model hidden: session scope\./.test(frame);
+    const detail = /Model 0 · 200k ctx/.test(frame);
+    const spacer = /🔍 >[^\n]*\n *\n/.test(frame);
+    assert.ok((frame.match(/custom\/model-/g) ?? []).length >= 3, frame);
+    assert.match(
+      frame.replace(/\s+/g, " "),
+      /Disclosure 10 stays visible/,
+      "disclosures never shed",
+    );
+    assert.ok(!spacer || summary, "spacers shed before the summary");
+    assert.ok(!summary || detail, "the summary sheds before the detail line");
+    assert.equal(summary, !/F1 1 hidden/.test(frame), "a shed summary still counts hidden models");
+    seen.add(`${spacer}${summary}${detail}`);
+  }
+  assert.deepEqual(
+    [...seen],
+    ["truetruetrue", "falsetruetrue", "falsefalsetrue", "falsefalsefalse"],
+  );
+});
+
+test("rows show provider/id with reasoning, context and price columns that drop price → context → reasoning", () => {
+  const rich: ProfileModelCatalog = {
+    entries: [
+      {
+        ...catalog.entries[0],
+        efforts: [{ effort: "off" }],
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+        cost: { input: 0.75, output: 3.75 },
+        reasoning: true,
+        vision: true,
+      },
+      { ...catalog.entries[0], id: "bare", name: "Bare", efforts: [{ effort: "off" }] },
+    ],
+  };
+  const p = picker(() => rich);
+  const wide = p.render(100);
+  assert.match(wide, /❯ custom\/opaque-1 +🧠 {2}1m {2}\$0\.75\/3\.75\n/);
+  assert.match(wide, /\n {2}custom\/bare\s*\n/, "missing metadata leaves blank cells");
+  assert.match(
+    wide,
+    /Friendly Model · 1m ctx · 128k out · \$0\.75\/3\.75 per M · reasoning · vision/,
+  );
+  assert.match(p.render(46), /❯ custom\/opaque-1 +🧠 {2}1m {2}\$0\.75\/3\.75\n/);
+  assert.match(p.render(45), /❯ custom\/opaque-1 +🧠 {2}1m\n/);
+  assert.match(p.render(33), /❯ custom\/opaque-1 +🧠\n/);
+});
+
+test("picker fits 72×25, 80×24, 120×36 and smaller, and cannot activate invisible choices", () => {
+  const p = picker(() => ({ entries: [...catalog.entries, ...three.entries] }), {
+    ...options,
+    prioritized: [{ provider: "custom", id: "granted", effort: "off" }],
+  });
+  p.send("down", "enter");
   for (const [width, height] of [
-    [120, 36],
-    [100, 24],
+    [72, 25],
     [80, 24],
+    [120, 36],
     [52, 24],
     [100, 12],
     [24, 12],
@@ -285,9 +453,13 @@ test("picker fits wide/narrow/short/tiny, retains native input/focus and cannot 
     p.resize(height);
     const lines = p.component.render(width);
     assert.ok(lines.length <= height);
-    for (const line of lines)
+    for (const line of lines) {
       assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
+      assert.doesNotMatch(plain(line), /[\x00-\x08\x0b-\x1f\x7f]/);
+    }
+    if (width >= 72 && height >= 14) assert.match(plain(lines.join("\n")), /Effort: \[⦸ off\]/);
     if (width < 32 || height < 14) {
+      if (height > 1) assert.match(plain(lines.join("\n")), /resize|Saved/);
       p.component.handleInput?.("enter");
       assert.equal(p.finished, false);
     }
@@ -296,6 +468,105 @@ test("picker fits wide/narrow/short/tiny, retains native input/focus and cannot 
   p.render();
   p.send("enter");
   assert.deepEqual(p.result, a);
+});
+
+test("empty/error/unavailable source states offer refresh/back and never manual-ID fallback", () => {
+  for (const source of [
+    () => ({ entries: [] }),
+    () => ({ entries: [], error: "Controlled metadata error" }),
+    () => {
+      throw new Error("secret host diagnostic");
+    },
+  ]) {
+    const p = picker(source);
+    const text = p.render();
+    assert.match(text, /\^R refresh/);
+    assert.doesNotMatch(text, /secret host diagnostic/);
+    p.send("enter");
+    assert.equal(p.finished, false);
+    p.send("esc");
+    assert.equal(p.finished, true);
+    assert.equal(p.result, undefined);
+  }
+});
+
+test("production 68x14 picker budgets mixed diagnostics before results and retains details/selection", () => {
+  const present = { ...catalog.entries[0], id: "present", efforts: [{ effort: "off" as const }] };
+  const inaccessible = {
+    ...present,
+    id: "missing",
+    efforts: [
+      { effort: "off" as const, reason: "Unavailable metadata/access " + "reason ".repeat(30) },
+    ],
+  };
+  const long = {
+    ...present,
+    id: "exact-" + "x".repeat(140),
+    name: "Eligible 終 " + "name ".repeat(30),
+  };
+  const p = picker(() => ({ entries: [long, present, catalog.entries[1], inaccessible] }), {
+    ...options,
+    context: [
+      "Global · affects other workspaces",
+      "Grant permits explicit overrides too",
+      "Saves route + exact grant atomically",
+    ],
+    excluded: [{ provider: present.provider, id: present.id, effort: "off" }],
+  });
+  p.resize(14);
+  const frame = p.render(68);
+  assert.doesNotMatch(frame, /resize/);
+  for (const label of [
+    "🔍 >",
+    "Provider:",
+    "/exact-xxx",
+    "Saves route",
+    "^R refresh",
+    "3 models hidden",
+  ])
+    assert.ok(frame.includes(label), `${label}\n${frame}`);
+  p.component.handleInput!(F1);
+  let details = p.render(68);
+  for (let i = 0; i < 80; i++) {
+    p.component.handleInput!("j");
+    details += p.render(68);
+  }
+  assert.match(details, /already present/);
+  assert.match(details, /session model\/effort scope/);
+  assert.match(details, /Unavailable metadata\/access/);
+  p.component.handleInput!("esc");
+  for (const key of ["enter", "enter"]) {
+    p.component.handleInput!(key);
+    p.render(68);
+  }
+  assert.deepEqual(p.result, { provider: long.provider, id: long.id, effort: "off" });
+});
+
+test("hints use bound keys and unbound actions do not invent confirmation keys", () => {
+  let finished = false;
+  const p = createProfileModelPicker(
+    () => catalog,
+    options,
+    theme,
+    { ...keys, getKeys: () => [] },
+    () => {},
+    () => {
+      finished = true;
+    },
+    () => 24,
+  );
+  p.render(100);
+  const frame = plain(p.render(100).join("\n"));
+  assert.match(frame, /— unbound assigns, unbound cancels/);
+  assert.match(frame, /unbound choose effort/);
+  assert.doesNotMatch(frame, /⏎|⎋|Enter|Esc/);
+  const bound = picker().render();
+  assert.match(bound, /general · Model chain — ⏎ assigns, ⎋ cancels/);
+  assert.match(
+    bound,
+    /type to search · ↑\/↓ move · ⌥←\/→\/Tab provider · ⏎ choose effort · F1 details · \^R refresh · ⎋ cancel/,
+  );
+  assert.equal(finished, false);
 });
 
 test("real SDK registry boundary exposes supported efforts and custom labels without invoking provider/auth operations", async (t) => {
@@ -447,79 +718,102 @@ test("metadata adapter keeps accessible out-of-scope entries, rejects nonphysica
   }
 });
 
-test("production 68x14 picker budgets mixed diagnostics before results and retains details/selection", () => {
-  const present = { ...catalog.entries[0], id: "present", efforts: [{ effort: "off" as const }] };
-  const inaccessible = {
-    ...present,
-    id: "missing",
-    efforts: [
-      { effort: "off" as const, reason: "Unavailable metadata/access " + "reason ".repeat(30) },
+test("catalog copies optional model metadata from the host snapshot and omits unknown values", () => {
+  const faux = fauxProvider({
+    provider: "metadata-fixture",
+    models: [
+      {
+        id: "rich",
+        name: "Rich",
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+        cost: { input: 2, output: 10, cacheRead: 0, cacheWrite: 0 },
+      },
+      { id: "plain", reasoning: false, input: ["text"] },
     ],
-  };
-  const long = {
-    ...present,
-    id: "exact-" + "x".repeat(140),
-    name: "Eligible 終 " + "name ".repeat(30),
-  };
-  const p = picker(() => ({ entries: [long, present, catalog.entries[1], inaccessible] }), {
-    ...options,
-    context: [
-      "Global · affects other workspaces",
-      "Grant permits explicit overrides too",
-      "Saves route + exact grant atomically",
-    ],
-    excluded: [{ provider: present.provider, id: present.id, effort: "off" }],
   });
-  p.resize(14);
-  const frame = p.render(68);
-  assert.doesNotMatch(frame, /resize/);
-  for (const label of [
-    "Search:",
-    "Provider:",
-    "Models:",
-    "Eligible",
-    "Effort:",
-    "Select",
-    "Refresh",
-    "F1",
-  ])
-    assert.ok(frame.includes(label), label);
-  p.component.handleInput!("\x1bOP");
-  let details = p.render(68);
-  for (let i = 0; i < 80; i++) {
-    p.component.handleInput!("j");
-    details += p.render(68);
-  }
-  assert.match(details, /already present/);
-  assert.match(details, /session model\/effort scope/);
-  assert.match(details, /Unavailable metadata\/access/);
-  p.component.handleInput!("esc");
-  for (const key of ["down", "enter", "\x1b[C", "enter", "enter"]) {
-    p.component.handleInput!(key);
-    p.render(68);
-  }
-  assert.deepEqual(p.result, { provider: long.provider, id: long.id, effort: "off" });
+  const models = faux.models.map((model) => ({ ...model, provider: "metadata-fixture" }));
+  const bare = {
+    ...models[1],
+    id: "bare",
+    contextWindow: 0,
+    maxTokens: Infinity,
+    cost: undefined,
+    input: undefined,
+    reasoning: undefined,
+  };
+  const all = [...models, bare];
+  const registry = {
+    getError: () => undefined,
+    getAvailable: () => all,
+    getProvider: () => ({}),
+    hasConfiguredAuth: () => true,
+    getProviderDisplayName: () => "Metadata",
+    find: (provider: string, id: string) =>
+      all.find((model) => model.provider === provider && model.id === id),
+  } as unknown as ExtensionCommandContext["modelRegistry"];
+  const snapshot = readProfileModelCatalog({ modelRegistry: registry, scopedModels: [] });
+  const [rich, plainEntry, bareEntry] = snapshot.entries;
+  assert.equal(rich.contextWindow, 1_000_000);
+  assert.equal(rich.maxTokens, 128_000);
+  assert.deepEqual(rich.cost, { input: 2, output: 10 });
+  assert.equal(rich.reasoning, true);
+  assert.equal(rich.vision, true);
+  assert.equal(plainEntry.reasoning, false);
+  assert.equal(plainEntry.vision, false);
+  for (const field of ["contextWindow", "maxTokens", "cost", "reasoning", "vision"])
+    assert.ok(!(field in bareEntry), field);
 });
 
-test("catalog search keeps Space/j/k/? printable and unbound hints do not invent confirmation keys", () => {
-  let finished = false;
-  const p = createProfileModelPicker(
-    () => catalog,
-    options,
-    theme,
-    { ...keys, getKeys: () => [] },
-    () => {},
-    () => {
-      finished = true;
-    },
-    () => 14,
-  );
-  p.render(68);
-  for (const key of ["j", " ", "k", "?"]) p.handleInput!(key);
-  const frame = plain(p.render(68).join("\n"));
-  assert.match(frame, /Search: j k\?/);
-  assert.match(frame, /unbound: results/);
-  assert.match(frame, /unbound back/);
-  assert.doesNotMatch(frame, /Enter|Esc/);
-  assert.equal(finished, false);
+test("formatters: effort glyphs, token counts, prices and provider-first identity truncation", () => {
+  for (const effort of EFFORTS) {
+    assert.equal(visibleWidth(PROFILE_EFFORT_GLYPHS[effort]), 1, effort);
+    assert.equal(profileEffortLabel(effort), `${PROFILE_EFFORT_GLYPHS[effort]} ${effort}`);
+  }
+  assert.equal(new Set(Object.values(PROFILE_EFFORT_GLYPHS)).size, EFFORTS.length);
+  assert.equal(profileEffortLabel("low"), "◔ low");
+  for (const [tokens, text] of [
+    [1_000_000, "1m"],
+    [1_048_576, "1m"],
+    [2_500_000, "2.5m"],
+    [500_000, "500k"],
+    [131_072, "131k"],
+    [16_384, "16k"],
+    [8192, "8.2k"],
+    [512, "512"],
+    [999_499, "999k"],
+    [999_500, "1m"],
+    [999_999, "1m"],
+    [999.5, "1k"],
+    [0, ""],
+    [undefined, ""],
+    [Infinity, ""],
+  ] as const)
+    assert.equal(profileTokenCount(tokens), text, String(tokens));
+  assert.equal(profilePrice({ input: 2, output: 10 }), "$2/10");
+  assert.equal(profilePrice({ input: 0.75, output: 3.75 }), "$0.75/3.75");
+  assert.equal(profilePrice({ input: 0, output: 0 }), "$0");
+  assert.equal(profilePrice({ input: 0.075, output: 0.3 }), "$0.075/0.3");
+  assert.equal(profilePrice(undefined), "");
+  const fg = (color: string, text: string) => `<${color}>${text}</>`;
+  const identity = (width: number, color?: "accent", themeFg = fg) =>
+    profileModelIdentity(
+      { fg: themeFg } as Parameters<typeof profileModelIdentity>[0],
+      "google-antigravity",
+      "claude-sonnet",
+      width,
+      color,
+    );
+  assert.equal(identity(40), "<muted>google-antigravity/</><text>claude-sonnet</>");
+  assert.equal(identity(40, "accent"), "<muted>google-antigravity/</><accent>claude-sonnet</>");
+  assert.equal(identity(22), "<muted>google-…/</><text>claude-sonnet</>");
+  assert.equal(identity(15), "<muted>…/</><text>claude-sonnet</>");
+  assert.equal(identity(10), "<muted>…/</><text>claude-…</>");
+  for (const width of [0, 1, 2, 3, 10, 15, 22, 40])
+    assert.ok(
+      visibleWidth(identity(width, undefined, (_color, text) => text)) <= width,
+      String(width),
+    );
 });
