@@ -2,24 +2,136 @@
 
 ## [Unreleased]
 
-- Reuse unchanged Hub roster, detached selected transcripts, native message projections and
-  rendered rows instead of repeatedly cloning, sanitizing and wrapping full history. Preserve
-  native output, full transcript access, live/final transitions, reading anchors and tool
-  expansion; resize/theme changes and custom renderer redraws remain observable.
-- Limit custom-renderer cache bypasses to tools present in the selected transcript, so the
-  Hub's `delegate_task` registration does not disable assistant or builtin-tool row reuse.
+## [0.5.0]
 
-- Coalesce foreground delegation streaming previews to one update per 50ms, showing the
-  latest progress at each flush. Lifecycle transitions and final outcomes remain immediate;
-  raw registry/SDK events, full snapshots, ordered batch results and completion wakeups are
-  unchanged. Calls without a progress observer skip partial-preview construction.
+Requires Node 22.19+ and stable Pi 1.5.2 or newer, unchanged from 0.4.0. Tested host
+remains Pi 1.5.2; newer stable hosts are allowed, not guaranteed compatible. Host peer
+dependencies remain wildcards by Pi's package format; the minimum is enforced at execution
+boundaries. This release contains three breaking changes, so it is a 0.x minor bump.
 
-- Completed conversation resumes read their original transcript asynchronously, allowing unrelated
-  activity to progress during disk verification. Exact retained-context and complete transcript
-  verification remain required; missing, empty, malformed or modified evidence still rejects
-  without changing the completed outcome. Pending resumes reserve their identity before waiting
-  and recheck cancellation and identity after waits so duplicates, stop, shutdown and replacement
-  generations cannot revive stale work. Retention, grants and execution budgets are unchanged.
+### Breaking changes
+
+- feat(profiles)!: autosave Inspector item changes (#74) (00da9af3ab41)
+
+  **What changed:** `/subagent-profiles` was a read-only viewer in 0.4.0; this release adds
+  native editing (#70), and ordinary edits persist when each item is committed, without Apply
+  or file-level Review/Save. Escape cancels only unfinished input; Revert never rolls back
+  verified saves. Advanced structural operations keep explicit transaction review. **Who is
+  affected:** operators who open the Inspector and choose a write destination; there is no
+  draft-then-save step for ordinary items. **What to do:** no configuration schema migration
+  is required. Check the destination (Global or Trusted project) and exact path before
+  editing, and treat each committed item as saved to disk.
+
+- feat(limits)!: let long subagent work continue across limits (#87) (b4d50813ec2c)
+
+  **What changed:** subagents no longer pause after 30 minutes by default
+  (`scheduling.deadlineMs` now defaults to `0`, no deadline; operators may set a positive
+  per-window cap of up to 24 hours). Request and tool budgets apply per execution window:
+  an explicit resume starts fresh request/tool budgets and a fresh deadline instead of
+  keeping them cumulative. Snapshot counters stay cumulative, new `windowStart` records where
+  the current window began, and spawns and the 64-window cap remain cumulative. **Who is
+  affected:** operators who relied on the default 30-minute pause, or on cumulative budgets,
+  to bound cost or runtime. **What to do:** to keep the old pause, set
+  `"scheduling": {"deadlineMs": 1800000}` in `~/.pi/agent/delegation.json`. Trusted projects
+  and task `limits.deadlineMs` can set or shorten a deadline but cannot disable an operator's.
+  Each resume can now spend a full new request/tool budget, so resume deliberately.
+
+- feat(hub)!: reduce slash commands to hub, profiles and stop (#90) (7ab8b6707b95)
+
+  **What changed:** `/subagent-status` and `/subagent-steer` (shipped in 0.4.0) are removed
+  without aliases, as is `/subagent-fallback-reset`, which was added after 0.4.0 and never
+  shipped. Remaining commands are `/subagent-hub`, `/subagent-profiles` and `/subagent-stop`.
+  In the Hub, Enter now focuses the steering composer instead of closing the Hub, the `s` key
+  is removed, and Esc/Ctrl+C close it. **Who is affected:** operators, scripts or prompts that
+  call the removed commands, and Hub users relying on `s` to steer or Enter to close. **What
+  to do:** use Subagent Hub (or the non-TUI `/subagent-hub` list) for status, the Hub composer
+  or the `subagent` steer action for steering, and ask the orchestrator to call root-only
+  `delegate_coordinate` `reset_fallback` before resuming an exhausted fallback chain.
+
+### Features
+
+- feat(subagents): add profile-owned model chains (#69) (e3f8a9706797)
+
+  Profiles may configure an ordered `fallback` chain of exactly granted physical targets in
+  operator `delegation.json`. Eligible transient and quota failures get two same-model retries
+  before advancing; every attempt consumes the request budget and failed calls may still cost
+  money. Profiles without a chain keep existing routing; explicit task `model` stays pinned
+  unless `fallback:true` is set. Fallback cannot be combined with prewalk.
+
+- feat(profiles): add native editing and custom roles (#70) (daef42236c45)
+- feat(profiles): add native Inspector presentation (#71) (26470a36032d)
+- feat(profiles): browse registry-backed model selections (#72) (c8b8477ad6d5)
+- feat(profiles): simplify the profile editor layout (#75) (999d3487dc0b)
+- feat(subagents): reserve budget for final reports (#84) (ad989c14f98a)
+
+  Warn near request and tool limits, then reserve reporting attempts within the existing hard
+  caps so a subagent can report partial findings or submit a structured result instead of
+  starting new work. Wrap-up adds no capacity and does not guarantee a result.
+
+- feat(results): surface partial output for paused and wrap-up windows (#86) (2c69b9603185)
+- feat(child): auto-compact and retry transient errors in subagents (#88) (19fd96baec8c)
+
+  Every child now uses Pi automatic compaction and retries transient provider errors twice on
+  the same model, with or without a fallback chain. Summary requests and retries are charged
+  to the request budget; compaction never spends the final-report reserve.
+
+- feat(profiles): table-style model picker with inline effort (#91) (df801f455905)
+- feat(profiles): inline model chain editing (#92) (fed2a9fac23b)
+- feat(hub): add model, effort and usage status line (#94) (eb79ecdae296)
+
+Breaking `feat(...)!` entries #74, #87 and #90 are listed under **Breaking changes** above.
+
+### Fixes and performance
+
+- perf: read completed-resume transcripts asynchronously (#65) (665612242535)
+
+  Completed conversation resumes read their original transcript asynchronously, allowing
+  unrelated activity to progress during disk verification. Exact retained-context and
+  complete transcript verification remain required; missing, empty, malformed or modified
+  evidence still rejects without changing the completed outcome. Pending resumes reserve their
+  identity before waiting and recheck cancellation and identity after waits, so duplicates,
+  stop, shutdown and replacement generations cannot revive stale work.
+
+- perf: coalesce foreground delegation previews (#66) (c36b2266d91e)
+
+  Foreground delegation streaming previews update at most once per 50ms, showing the latest
+  progress at each flush. Lifecycle transitions and final outcomes remain immediate; raw
+  registry/SDK events, full snapshots, ordered batch results and completion wakeups are
+  unchanged.
+
+- perf: cache unchanged Hub transcripts and native rows (#67) (07f6afed55f9)
+
+  Reuse unchanged Hub roster, selected transcripts, native message projections and rendered
+  rows instead of repeatedly cloning, sanitizing and wrapping full history. Custom-renderer
+  cache bypasses are limited to tools present in the selected transcript. Native output, full
+  transcript access, live/final transitions, reading anchors and tool expansion are preserved.
+
+- fix(profiles): simplify default-first model selection (#76) (f8835d2ebaa1)
+- fix(profiles): preserve unfinished text through navigation and recovery (#77) (eb7b50821faa)
+- fix(profiles): make compact controls and membership actions reliable (#79) (24d670f72824)
+- fix(hub): clarify supervision controls and original-target feedback (#78) (6b8a1ed420b8)
+- fix(profiles): clarify inspector focus, density and labels (#85) (67002126c4df)
+
+### Other changes
+
+- build: generate release changelogs from conventional commits (#68) (1b48907da52a)
+- build(deps): bump actions/download-artifact from 4.3.0 to 8.0.2 (#83) (47e21b95ae00)
+- build(deps): bump pullfrog/pullfrog from 0.1.126 to 0.1.130 (#82) (c44761dff6ec)
+- build(deps): bump actions/upload-artifact from 4.6.2 to 7.0.2 (#81) (5d807d39df76)
+
+### Migration
+
+Let active tasks drain, install `@howarewoo/pi-subagents@0.5.0` and restart Pi. Existing valid
+0.4.0 configuration loads unchanged; grants, Pi host requirements, identity/artifact formats
+and capacity limits are unchanged. Apply the per-change actions above: set
+`scheduling.deadlineMs` if you want a default pause again, and replace any use of the removed
+commands. Updating a checkout does not change an already loaded runtime; reload and shutdown
+abort and drain active children rather than migrate them.
+
+**Rollback to 0.4.x:** 0.4.0 rejects configuration it does not know. Before reinstalling
+0.4.0, remove profile `fallback` chains, custom role definitions and project-local spawn-target
+registrations, and any `scheduling.deadlineMs` of `0` or above 3600000 from
+`delegation.json` files, then restart Pi.
 
 ## [0.4.0]
 
