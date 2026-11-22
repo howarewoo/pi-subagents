@@ -15,8 +15,8 @@ _Pinned Subagents widget at default capacity: 16 running tasks and 32 queued. Be
 
 ## Installation
 
-Requires **Node 22.19+** and **stable Pi 1.5.2 or newer**. Tested host: Pi 1.5.2;
-newer stable versions are allowed, not guaranteed compatible. Prerelease, older, malformed
+Requires **Node 22.19+** and **stable Pi 1.5.2 or newer**. Tested host: Pi 1.6.0;
+other stable versions at or above the minimum are allowed, not guaranteed compatible. Prerelease, older, malformed
 and unknown host versions are rejected before task reads, allocation or model requests.
 Wildcard host peer dependencies follow Pi's package format, not a compatibility promise.
 See [host support](docs/delegation-contract.md#supported-host) for version rules.
@@ -675,3 +675,8 @@ delegation/<parent-session-id>/<task-id>/
 ```
 
 Completed generations keep their own immutable files. New generations use `<task-id>-g<generation>/`. Old `extended-subagents-proof` data is left untouched and is not loaded or migrated. SDK hosts must emit the public shutdown lifecycle before disposal; bare `session.dispose()` does not perform that cleanup.
+
+## License
+
+MIT. Includes a resource-loader shape adapted from Pi's SDK examples; see
+[LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).

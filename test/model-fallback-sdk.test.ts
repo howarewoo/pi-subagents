@@ -20,7 +20,7 @@ import { fixture } from "./fixtures.ts";
 
 // Feasibility checkpoint: real SDK boundary dispatch, not a replacement agent loop.
 for (const failure of ["insufficient_quota", "503 Service Unavailable"]) {
-  test(`SDK 1.5.2 boundary recovers ${failure} without changing raw errors`, async (t) => {
+  test(`SDK boundary recovers ${failure} without changing raw errors`, async (t) => {
     const { root, runtime, model } = await fixture(t);
     const requests: string[] = [];
     let failuresSeen = 0;

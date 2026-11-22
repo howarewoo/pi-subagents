@@ -17,7 +17,7 @@ The repository workflows do not publish on ordinary main-branch pushes.
   are rejected until a separate channel policy is added.
 - Delegated execution requires **stable Pi 1.5.2 or newer**, including newer stable patch,
   minor and major versions. Standard build metadata has equal precedence. **Tested host:
-  Pi 1.5.2**; allowing future stable versions is not a tested compatibility guarantee.
+  Pi 1.6.0**; allowing other stable versions at or above the minimum is not a tested compatibility guarantee.
   Below-minimum, prerelease, malformed and unknown hosts fail closed at execution boundaries, not extension registration. Root status,
   stop/cleanup and diagnostics remain available if the host can load the module; arbitrary
   ancient SDK module-load compatibility is not promised. Wildcard host peer dependencies
@@ -205,7 +205,7 @@ is listed instead of its branch commits, and rebase merges may produce multiple 
    These instructions describe maintainer actions; local checks do not commit or publish.
 
 CI runs all checks and the package smoke test on Node 22.19.0 and Node 24. It uses pinned Pi
-1.5.2 development packages, not an implied matrix of all Pi versions.
+1.6.0 development packages, not an implied matrix of all Pi versions.
 
 ## First scoped npm publish only
 

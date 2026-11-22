@@ -5,7 +5,7 @@ import { access, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 // Substitute only the SDK's public VERSION binding; all session, extension,
-// validation and dispatch code remains the installed Pi 1.5.2 implementation.
+// validation and dispatch code remains the installed Pi implementation.
 const boundary = globalThis as typeof globalThis & { setHostVersion: (version: unknown) => void };
 registerHooks({
   load(url, context, nextLoad) {
