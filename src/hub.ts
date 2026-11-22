@@ -26,6 +26,7 @@ import {
   agentLabel,
   assignmentHeadline,
   lineText,
+  statusLine,
   taskDetails,
   taskTree,
   transcriptLines,
@@ -452,8 +453,11 @@ export function createHub(
       const paneHeight = Math.max(1, height - 2 - shownFooter.length - separatorRows);
       // A focused composer outranks reading rows; idle hints need room for a reading line.
       const composerRows = mode === "steer" || paneHeight >= 4 ? 1 : 0;
+      // Like Pi's footer, the status row sits below the composer. It yields before reading drops
+      // below two rows, because native thread output ends with a spacer row.
+      const statusRows = paneHeight - 3 - composerRows >= 3 ? 1 : 0;
       if (interactionTarget) interactionVisibleAtHeight = height;
-      viewport = Math.max(1, paneHeight - 3 - composerRows);
+      viewport = Math.max(1, paneHeight - 3 - composerRows - statusRows);
       let detail: string[] = [];
       let nativeLines: string[] | undefined;
       if (child) {
@@ -540,8 +544,10 @@ export function createHub(
         x: wide ? 2 + leftWidth + 3 : 2,
         y: 3,
         width: threadWidth,
-        height: Math.max(0, paneHeight - 3 - composerRows),
+        height: Math.max(0, paneHeight - 3 - composerRows - statusRows),
       };
+      // Theme.fg is a method; keep its receiver.
+      const status = statusLine(child, threadWidth, (color, text) => theme.fg(color, text));
       const content = wrapped
         .slice(offset, offset + viewport)
         .map((line) => (nativeLines ? line : theme.fg("text", line)));
@@ -619,11 +625,13 @@ export function createHub(
             ) +
               theme.fg("border", " │ ") +
               cell(
-                composerRows && index === paneHeight - 1
-                  ? composer
-                  : index === paneHeight - 1 - composerRows
-                    ? theme.fg("muted", position)
-                    : (right[index] ?? ""),
+                statusRows && index === paneHeight - 1
+                  ? status
+                  : composerRows && index === paneHeight - 1 - statusRows
+                    ? composer
+                    : index === paneHeight - 1 - composerRows - statusRows
+                      ? theme.fg("muted", position)
+                      : (right[index] ?? ""),
                 threadWidth,
               ),
           );
@@ -650,11 +658,14 @@ export function createHub(
           );
         if (paneHeight > 2)
           pane.push(
-            ...content.slice(0, Math.max(0, paneHeight - 3 - composerRows)),
-            ...Array(Math.max(0, paneHeight - 3 - composerRows - content.length)).fill(""),
+            ...content.slice(0, Math.max(0, paneHeight - 3 - composerRows - statusRows)),
+            ...Array(Math.max(0, paneHeight - 3 - composerRows - statusRows - content.length)).fill(
+              "",
+            ),
             theme.fg("muted", position),
           );
-        if (composerRows) pane.splice(paneHeight - 1, pane.length, composer);
+        if (composerRows) pane.splice(paneHeight - 1 - statusRows, pane.length, composer);
+        if (statusRows) pane.push(status);
       }
       return [
         frame("╭", " Subagent Hub ", "╮"),

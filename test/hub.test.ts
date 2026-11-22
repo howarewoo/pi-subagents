@@ -25,7 +25,7 @@ import {
   type ThemeStyle,
 } from "@earendil-works/pi-coding-agent";
 import { fixture } from "./fixtures.ts";
-import { taskTree } from "../src/task-presentation.ts";
+import { statusLine, taskTree } from "../src/task-presentation.ts";
 
 initTheme("dark", false);
 const dependencies = { tui: new TuiMainScreen(new ProcessTerminal()), cwd: process.cwd() };
@@ -411,7 +411,7 @@ test("Hub selection survives streaming/new completion; search, tabs, full transc
   assert.match(output(), /FULL LINE 99/);
   hub.handleInput!("\t");
   hub.handleInput!("\x1b[F");
-  assert.match(output(), /Direct tokens unavailable/);
+  assert.match(output(), /Followup\/revive: native delegate_coordinate only/);
   hub.handleInput!("\t");
   assert.match(output(), /TOOLS/);
   assert.match(output(), /Steer · Enter to compose a message for this task/);
@@ -1479,18 +1479,25 @@ test("Hub normalized wheel is contained to its reading viewport, never the roste
     const rendered = before.split("\n");
     const separatorY = rendered.findIndex((line) => line.startsWith("├"));
     assert.equal(separatorY, 22);
-    for (const y of [separatorY - 2, separatorY - 1, separatorY, separatorY + 1, 26]) {
+    for (const y of [
+      separatorY - 3,
+      separatorY - 2,
+      separatorY - 1,
+      separatorY,
+      separatorY + 1,
+      26,
+    ]) {
       hub.handleMouse?.({ ...event, y });
       assert.equal(
         output(),
         before,
-        "position row, composer, separator and footer must not scroll",
+        "position row, composer, status row, separator and footer must not scroll",
       );
     }
-    hub.handleMouse?.({ ...event, y: separatorY - 3 });
+    hub.handleMouse?.({ ...event, y: separatorY - 4 });
     assert.notEqual(output(), before, "last reading row remains wheel-scrollable");
     const position = output().match(/(\d+)–(\d+)\/\d+ lines/)!;
-    assert.equal(Number(position[2]) - Number(position[1]) + 1, 17);
+    assert.equal(Number(position[2]) - Number(position[1]) + 1, 16);
     hub.handleInput!("\x1b[6~");
     const nextPosition = output().match(/(\d+)–(\d+)\/\d+ lines/)!;
     assert.equal(Number(nextPosition[1]) - Number(position[1]), 6, "page clamps at the live tail");
@@ -2587,7 +2594,8 @@ test("Hub thread-column composer explains availability, ignores empty sends and 
     for (const width of [90, 54]) {
       const lines = output(width).split("\n");
       const separator = lines.findIndex((line) => line.startsWith("├"));
-      assert.match(lines[separator - 1], /Steer · Enter to compose a message for this task/);
+      assert.match(lines[separator - 2], /Steer · Enter to compose a message for this task/);
+      assert.match(lines[separator - 1], /controlled\/model · effort unavailable │$/);
     }
     hub.handleInput!("\r");
     hub.handleInput!("   ");
@@ -2603,6 +2611,243 @@ test("Hub thread-column composer explains availability, ignores empty sends and 
     assert.match(output(), /Steering unavailable/);
     assert.doesNotMatch(output(), /Target:/);
     assert.equal(closed, 0, "Enter never closes the Hub");
+  } finally {
+    hub.dispose();
+  }
+});
+
+const usage: ChildSnapshot["telemetry"] = {
+  requests: 3,
+  tokens: { input: 12_000, output: 3_100, cacheRead: 40_000, cacheWrite: 2_000, total: 57_100 },
+  cost: 0.042,
+  context: { tokens: 82_400, contextWindow: 200_000, percent: 41.2 },
+};
+
+test("status line shows direct usage left and provider/model/effort right like Pi's footer", () => {
+  const plain = (_color: string, text: string) => text;
+  const child = snapshot("status", {
+    model: { provider: "anthropic", id: "claude-opus-4-5" },
+    effort: "high",
+    telemetry: usage,
+  });
+  const model = "anthropic/claude-opus-4-5 · effort high";
+  const full = statusLine(child, 100, plain);
+  assert.equal(visibleWidth(full), 100);
+  assert.match(
+    full,
+    /^↑12k ↓3\.1k R40k W2\.0k \$0\.042 41\.2%\/200k +anthropic\/claude-opus-4-5 · effort high$/,
+  );
+  assert.equal(statusLine(undefined, 100, plain), "", "no selection renders an empty row");
+  assert.equal(statusLine(child, 0, plain), "");
+
+  const right = (patch: Partial<ChildSnapshot>) => statusLine({ ...child, ...patch }, 100, plain);
+  assert.match(right({ effort: null }), /anthropic\/claude-opus-4-5 · effort unavailable$/);
+  assert.match(right({ effort: "off" }), /· effort off$/);
+  const unknown = { requests: null, tokens: null, cost: null, context: null };
+  assert.equal(right({ telemetry: unknown }), " ".repeat(100 - model.length) + model);
+  const zeros = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  assert.equal(
+    right({ telemetry: { ...unknown, tokens: zeros, cost: 0 } }).trim(),
+    model,
+    "zero usage is omitted, never printed as 0",
+  );
+  assert.match(right({ telemetry: { ...usage, costIncomplete: true } }), / ≥\$0\.042 /);
+  assert.match(right({ telemetry: { ...unknown, cost: 0, costIncomplete: true } }), /^≥\$0\.000 /);
+  assert.match(
+    right({
+      telemetry: { ...unknown, context: { tokens: null, contextWindow: 200_000, percent: null } },
+    }),
+    /^\?\/200k /,
+    "unknown percent is explicit, not synthesized",
+  );
+  assert.match(
+    right({ model: { provider: "evil\u001b]8;;x\u0007", id: "m\u001b[31m" } }),
+    /evil.*\/m.* · effort high$/,
+  );
+  assert.doesNotMatch(
+    right({ model: { provider: "evil\u001b]8;;x\u0007", id: "m\u001b[31m" } }),
+    /[\x00-\x1f\x7f-\x9f]/,
+  );
+
+  for (const [percent, expected] of [
+    [41.2, "dim"],
+    [70, "dim"],
+    [70.1, "warning"],
+    [75, "warning"],
+    [90, "warning"],
+    [90.1, "error"],
+    [95, "error"],
+  ] as const) {
+    const colors = new Map<string, string>();
+    statusLine(
+      {
+        ...child,
+        telemetry: { ...usage, context: { tokens: 1, contextWindow: 200_000, percent } },
+      },
+      100,
+      (color, text) => (colors.set(text, color), text),
+    );
+    assert.equal(colors.get(`${percent.toFixed(1)}%/200k`), expected);
+  }
+
+  // Pi footer token thresholds.
+  for (const [count, text] of [
+    [999, "999"],
+    [1_000, "1.0k"],
+    [9_949, "9.9k"],
+    [10_000, "10k"],
+    [999_000, "999k"],
+    [1_000_000, "1.0M"],
+    [12_300_000, "12M"],
+  ] as const) {
+    const tokens = { input: count, output: 0, cacheRead: 0, cacheWrite: 0, total: count };
+    assert.match(
+      right({
+        telemetry: { ...unknown, tokens, context: { ...usage.context!, contextWindow: count } },
+      }),
+      new RegExp(`^↑${text.replace(".", "\\.")} 41\\.2%/${text.replace(".", "\\.")} `),
+    );
+  }
+
+  // Model/effort outrank usage; whole usage parts yield (cache, ↑, ↓, cost, context).
+  const parts = ["↑12k", "↓3.1k", "R40k", "W2.0k", "$0.042", "41.2%/200k"];
+  const leftAt = (width: number) => statusLine(child, width, plain).split(/ {2,}/)[0];
+  const fitting = (left: string) => model.length + 2 + left.length;
+  assert.equal(leftAt(fitting("↑12k ↓3.1k $0.042 41.2%/200k")), "↑12k ↓3.1k $0.042 41.2%/200k");
+  assert.equal(leftAt(fitting("↓3.1k $0.042 41.2%/200k")), "↓3.1k $0.042 41.2%/200k");
+  assert.equal(leftAt(fitting("$0.042 41.2%/200k")), "$0.042 41.2%/200k");
+  assert.equal(leftAt(fitting("41.2%/200k")), "41.2%/200k");
+  assert.equal(statusLine(child, model.length, plain), model, "usage yields entirely before model");
+  assert.equal(
+    statusLine(child, model.length - 1, plain),
+    "claude-opus-4-5 · effort high".padStart(model.length - 1),
+    "provider yields before the model or effort is truncated",
+  );
+  for (let width = 1; width <= 120; width++) {
+    const line = statusLine(child, width, plain);
+    assert.equal(visibleWidth(line), width);
+    const segments = stripAnsi(line).trim().split(/ {2,}/);
+    if (segments.length > 1)
+      for (const part of segments[0].split(" "))
+        assert.ok(parts.includes(part), `whole part: ${part}`);
+  }
+  assert.ok(
+    stripAnsi(statusLine(child, 10, plain)) === "claude-op…",
+    "model truncates only when it alone overflows",
+  );
+});
+
+test("Hub status row sits below the composer and follows the selected generation live", (t) => {
+  const coordinator = new DelegationCoordinator("unused", "root");
+  let children = [
+    snapshot("alpha", {
+      model: { provider: "anthropic", id: "claude-opus-4-5" },
+      effort: "high",
+      telemetry: usage,
+    }),
+    snapshot("beta", { model: { provider: "openai", id: "gpt-5" }, effort: "low" }),
+  ];
+  let listener: Parameters<DelegationCoordinator["subscribe"]>[0] | undefined;
+  t.mock.method(coordinator, "list", () => structuredClone(children));
+  t.mock.method(coordinator, "snapshot", (ref: ChildRef) =>
+    structuredClone(children.find((child) => child.id === ref.id)),
+  );
+  t.mock.method(coordinator, "messages", () => []);
+  t.mock.method(coordinator, "subscribe", (cb: typeof listener) => {
+    listener = cb;
+    return () => {};
+  });
+  let rows = 24;
+  // Pi's Theme.fg is a method that reads `this`; the Hub must keep the receiver.
+  const methodTheme = {
+    ...theme,
+    marker: "",
+    fg(this: { marker: string }, _color: string, text: string) {
+      return this.marker + text;
+    },
+  };
+  const hub = createHub(
+    coordinator,
+    methodTheme,
+    hubBindings(),
+    () => {},
+    () => {},
+    dependencies,
+    () => rows,
+  );
+  const lines = (width: number) => hub.render(width).map(stripAnsi);
+  const statusRow = (width: number) => {
+    const rendered = lines(width);
+    const separator = rendered.findIndex((line) => line.startsWith("├"));
+    return {
+      rendered,
+      separator,
+      composer: rendered[separator - 2],
+      status: rendered[separator - 1],
+    };
+  };
+  try {
+    for (const width of [100, 60]) {
+      const { rendered, composer, status } = statusRow(width);
+      assert.ok(rendered.every((line) => visibleWidth(line) === width));
+      assert.match(composer, /Steer · Enter to compose/);
+      assert.match(status, /anthropic\/claude-opus-4-5 · effort high │$/);
+      assert.match(status, /41\.2%\/200k/);
+    }
+    // Fallback/prewalk switches and new telemetry arrive as ordinary registry updates.
+    children = [
+      {
+        ...children[0],
+        model: { provider: "google", id: "gemini-2.5-pro" },
+        effort: "medium",
+        telemetry: {
+          ...usage,
+          cost: 0.5,
+          context: { tokens: 1, contextWindow: 1_000_000, percent: 92 },
+        },
+      },
+      children[1],
+    ];
+    listener!({ type: "changed", child: children[0] });
+    assert.match(
+      statusRow(100).status,
+      /\$0\.500 92\.0%\/1\.0M +google\/gemini-2\.5-pro · effort medium │$/,
+    );
+    hub.handleInput!("\x1b[B");
+    assert.match(
+      statusRow(100).status,
+      /│ +openai\/gpt-5 · effort low │$/,
+      "selection switches values",
+    );
+    assert.doesNotMatch(statusRow(100).status, /gemini|\$/);
+    hub.handleInput!("\r");
+    hub.handleInput!("draft");
+    const steering = statusRow(100);
+    assert.match(steering.composer, /Steer > draft/);
+    assert.match(
+      steering.status,
+      /openai\/gpt-5 · effort low │$/,
+      "status stays below a focused composer",
+    );
+    hub.handleInput!("\x1b");
+    for (rows = 1; rows <= 27; rows++)
+      for (const width of [40, 60, 100]) {
+        const rendered = lines(width);
+        assert.ok(
+          rendered.length <= rows && rendered.every((line) => visibleWidth(line) === width),
+        );
+        const status = rendered.findIndex((line) => /effort low/.test(line));
+        if (status < 0) continue;
+        assert.match(
+          rendered[status - 1],
+          /Steer/,
+          "status row never appears without the composer",
+        );
+        assert.ok(
+          rendered.slice(3, status - 2).length >= 2,
+          `at least two reading rows remain at ${width}x${rows}`,
+        );
+      }
   } finally {
     hub.dispose();
   }

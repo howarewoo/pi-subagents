@@ -111,6 +111,33 @@ test(
   },
 );
 
+test("live telemetry includes each assistant message as it ends, matching the final totals", async (t) => {
+  const { coordinator, direct, events } = await fixture(t, {
+    response: (context) =>
+      context.messages.at(-1)?.role === "toolResult"
+        ? fauxAssistantMessage("listed")
+        : fauxAssistantMessage(fauxToolCall("ls", { path: "." }), { stopReason: "toolUse" }),
+  });
+  const ref = await direct("list files");
+  const final = await coordinator.wait(ref);
+  const ends = events.filter(
+    (event) =>
+      event.child.id === ref.id &&
+      event.event?.type === "message_end" &&
+      event.event.message.role === "assistant",
+  );
+  assert.equal(ends.length, 2);
+  let output = 0;
+  for (const { child, event } of ends) {
+    // SDK public listeners run before message_end persistence; this message must still count.
+    output += (event as { message: { usage: { output: number } } }).message.usage.output;
+    assert.ok(output > 0);
+    assert.equal(child.telemetry.tokens?.output, output);
+  }
+  assert.deepEqual(ends.at(-1)!.child.telemetry.tokens, final.telemetry.tokens);
+  assert.equal(ends.at(-1)!.child.telemetry.cost, final.telemetry.cost);
+});
+
 test("shutdown racing child construction drains setup without model execution", async (t) => {
   const { coordinator, direct } = await fixture(t);
   // direct() first obtains context; shutdown at the observable setup boundary.

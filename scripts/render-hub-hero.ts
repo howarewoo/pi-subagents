@@ -57,8 +57,23 @@ const children: ChildSnapshot[] = [...running, ...queued].map((task, index) => (
   progress: "",
   result: "",
   model: { provider: "synthetic", id: "demo" },
-  effort: null,
-  telemetry: { requests: null, tokens: null, cost: null, context: null },
+  effort: "medium",
+  // Deterministic synthetic usage for running tasks; queued tasks have none yet.
+  telemetry:
+    index < running.length
+      ? {
+          requests: 4 + index,
+          tokens: {
+            input: 8_000 + index * 900,
+            output: 1_200 + index * 150,
+            cacheRead: 24_000 + index * 2_000,
+            cacheWrite: 0,
+            total: 33_200 + index * 3_050,
+          },
+          cost: 0.018 + index * 0.002,
+          context: { tokens: 30_000 + index * 2_000, contextWindow: 200_000, percent: 15 + index },
+        }
+      : { requests: null, tokens: null, cost: null, context: null },
   disposed: false,
   createdAt: 1000,
   endedAt: null,

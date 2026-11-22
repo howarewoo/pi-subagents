@@ -1,4 +1,4 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ChildSnapshot, DelegationCoordinator } from "./coordinator.ts";
 import { safe } from "./thread.ts";
 
@@ -75,6 +75,64 @@ export function fleetSummary(children: ChildSnapshot[]): string {
         .map((status) => `${status} ${children.filter((child) => child.status === status).length}`)
         .join(" · ")
     : "No tasks · ask the model to delegate_task";
+}
+
+/** Pi footer token thresholds; the SDK does not export its formatter. */
+const compactTokens = (count: number) =>
+  count < 1000
+    ? `${count}`
+    : count < 10_000
+      ? `${(count / 1000).toFixed(1)}k`
+      : count < 1_000_000
+        ? `${Math.round(count / 1000)}k`
+        : count < 10_000_000
+          ? `${(count / 1_000_000).toFixed(1)}M`
+          : `${Math.round(count / 1_000_000)}M`;
+
+/**
+ * Pi-style status row for one generation: direct usage left, model/effort right-aligned.
+ * Unknown or zero usage is omitted. When width is short, model/effort outrank usage, and whole usage
+ * parts are dropped (cache, then token, then cost, then context) so no number is cut mid-value.
+ */
+export function statusLine(
+  child: ChildSnapshot | undefined,
+  width: number,
+  fg: (color: "dim" | "warning" | "error", text: string) => string,
+): string {
+  if (!child || width <= 0) return "";
+  const id = lineText(child.model.id);
+  const effort = `effort ${lineText(child.effort ?? "unavailable")}`;
+  let right = `${lineText(child.model.provider)}/${id} · ${effort}`;
+  if (visibleWidth(right) > width) right = truncateToWidth(`${id} · ${effort}`, width, "…");
+  const { tokens, cost, costIncomplete, context } = child.telemetry;
+  const percent = context?.percent ?? null;
+  // Display order matches Pi's footer; `drop` is the order parts yield under width pressure.
+  type Part = { text: string; drop: number; color: "dim" | "warning" | "error" };
+  let parts: Part[] = [];
+  const counts = tokens
+    ? ([
+        ["↑", tokens.input, 2],
+        ["↓", tokens.output, 3],
+        ["R", tokens.cacheRead, 0],
+        ["W", tokens.cacheWrite, 1],
+      ] as const)
+    : [];
+  for (const [label, count, drop] of counts)
+    if (count > 0) parts.push({ text: label + compactTokens(count), drop, color: "dim" });
+  if (cost !== null && (cost > 0 || costIncomplete))
+    parts.push({ text: `${costIncomplete ? "≥" : ""}$${cost.toFixed(3)}`, drop: 4, color: "dim" });
+  if (context)
+    parts.push({
+      text: `${percent === null ? "?" : percent.toFixed(1) + "%"}/${compactTokens(context.contextWindow)}`,
+      drop: 5,
+      color: (percent ?? 0) > 90 ? "error" : (percent ?? 0) > 70 ? "warning" : "dim",
+    });
+  const available = width - visibleWidth(right) - 2;
+  const plainWidth = () => visibleWidth(parts.map((part) => part.text).join(" "));
+  while (parts.length && plainWidth() > available)
+    parts = parts.filter((part) => part.drop !== Math.min(...parts.map(({ drop }) => drop)));
+  const left = parts.map((part) => fg(part.color, part.text)).join(fg("dim", " "));
+  return left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + fg("dim", right);
 }
 
 export function taskCard(child: ChildSnapshot | undefined, expanded = false): string[] {
