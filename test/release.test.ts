@@ -10,17 +10,48 @@ import { fileURLToPath } from "node:url";
 const script = fileURLToPath(new URL("../scripts/release-notes.mjs", import.meta.url));
 const publishScript = fileURLToPath(new URL("../scripts/publish-package.mjs", import.meta.url));
 
-for (const scenario of ["valid", "tag mismatch", "lock mismatch", "missing notes", "prerelease"])
+const releaseScenarios = [
+  "valid",
+  "tag mismatch",
+  "lock mismatch",
+  "lock name mismatch",
+  "lock dependency mismatch",
+  "restricted access",
+  "missing notes",
+  "prerelease",
+] as const;
+for (const scenario of releaseScenarios)
   test(`release metadata: ${scenario}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-subagents-release-"));
     try {
       const version = scenario === "prerelease" ? "0.2.0-beta.1" : "0.2.0";
-      await writeFile(join(root, "package.json"), JSON.stringify({ version, license: "MIT" }));
+      const manifest = {
+        name: "@howarewoo/pi-example",
+        version,
+        license: "MIT",
+        publishConfig: { access: scenario === "restricted access" ? "restricted" : "public" },
+        engines: { node: ">=22.19.0" },
+        dependencies: { "runtime-example": "1.0.0" },
+        peerDependencies: { "host-example": "*" },
+        devDependencies: { "host-example": "1.0.0" },
+      };
+      const { license: _license, publishConfig: _publish, ...lockRoot } = manifest;
+      await writeFile(join(root, "package.json"), JSON.stringify(manifest));
       await writeFile(
         join(root, "package-lock.json"),
         JSON.stringify({
+          name: scenario === "lock name mismatch" ? "@howarewoo/other" : manifest.name,
           version,
-          packages: { "": { version: scenario === "lock mismatch" ? "0.1.0" : version } },
+          packages: {
+            "": {
+              ...lockRoot,
+              version: scenario === "lock mismatch" ? "0.1.0" : version,
+              dependencies:
+                scenario === "lock dependency mismatch"
+                  ? { "runtime-example": "2.0.0" }
+                  : manifest.dependencies,
+            },
+          },
         }),
       );
       await writeFile(
@@ -59,6 +90,10 @@ for (const scenario of [
   "wrong commit",
   "wrong path",
   "wrong digest",
+  "verify only",
+  "missing oidc",
+  "stored token",
+  "old npm",
 ])
   test(`publication recovery: ${scenario}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-subagents-publish-"));
@@ -93,6 +128,7 @@ for (const scenario of [
         import childProcess from "node:child_process";
         import { syncBuiltinESMExports } from "node:module";
         childProcess.execFileSync = (command, args) => {
+          if (args[0] === "--version") return ${JSON.stringify(scenario === "old npm" ? "11.5.0\n" : "11.5.1\n")};
           assert.equal(${JSON.stringify(scenario)}, "new", "Existing versions must not publish");
           assert.equal(command, "npm");
           assert.deepEqual(args, ["publish", ${JSON.stringify(tarball)}, "--access", "public", "--ignore-scripts"]);
@@ -109,21 +145,40 @@ for (const scenario of [
           };
         };
       `;
+      // Controlled OIDC context only; stored npm tokens are never inherited by the subprocess.
+      const { NPM_TOKEN: _npm, NODE_AUTH_TOKEN: _node, ...env } = process.env;
       const result = spawnSync(
         process.execPath,
-        ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, publishScript, root],
+        [
+          "--import",
+          `data:text/javascript,${encodeURIComponent(preload)}`,
+          publishScript,
+          root,
+          ...(scenario === "verify only" ? ["--verify-only"] : []),
+        ],
         {
           cwd: root,
           encoding: "utf8",
           env: {
-            ...process.env,
+            ...env,
+            ...(scenario === "missing oidc"
+              ? {}
+              : {
+                  ACTIONS_ID_TOKEN_REQUEST_URL: "https://controlled.invalid/oidc",
+                  ACTIONS_ID_TOKEN_REQUEST_TOKEN: "controlled",
+                }),
+            ...(scenario === "stored token" ? { NPM_TOKEN: "controlled" } : {}),
             RELEASE_TAG: "v0.1.1",
             RELEASE_COMMIT: "a".repeat(40),
             RELEASE_INTEGRITY: integrity,
           },
         },
       );
-      assert.equal(result.status, ["new", "identical"].includes(scenario) ? 0 : 1, result.stderr);
+      assert.equal(
+        result.status,
+        ["new", "identical", "verify only"].includes(scenario) ? 0 : 1,
+        result.stderr,
+      );
       assert.equal(result.stdout.includes("CONTROLLED_PUBLISH"), scenario === "new");
       assert.equal(
         result.stdout.includes("CONTROLLED_FETCH"),
@@ -131,6 +186,10 @@ for (const scenario of [
       );
       if (scenario === "different") assert.match(result.stderr, /different contents/);
       if (scenario === "registry error") assert.match(result.stderr, /Cannot verify/);
+      if (scenario === "verify only") assert.match(result.stdout, /no registry access/);
+      if (scenario === "missing oidc") assert.match(result.stderr, /OIDC context required/);
+      if (scenario === "stored token") assert.match(result.stderr, /tokens are not allowed/);
+      if (scenario === "old npm") assert.match(result.stderr, /npm >=11\.5\.1/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

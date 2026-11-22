@@ -8,8 +8,18 @@ const tag = process.argv[2] ?? `v${pkg.version}`;
 // Prereleases need an explicit channel policy before they can be published.
 assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
 assert.equal(tag, `v${pkg.version}`, "Release tag must match package.json");
+assert.equal(lock.name, pkg.name, "Lockfile name must match package.json");
 assert.equal(lock.version, pkg.version, "Lockfile version must match package.json");
-assert.equal(lock.packages[""].version, pkg.version, "Lockfile root version must match");
+for (const key of [
+  "name",
+  "version",
+  "engines",
+  "dependencies",
+  "peerDependencies",
+  "devDependencies",
+])
+  assert.deepEqual(lock.packages[""][key], pkg[key], `Lockfile root ${key} must match`);
+assert.equal(pkg.publishConfig?.access, "public", "Scoped packages must publish publicly");
 assert.equal(pkg.license, "MIT", "Review licensing before changing the release policy");
 
 const changelog = await readFile("CHANGELOG.md", "utf8");
