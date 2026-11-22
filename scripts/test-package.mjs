@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import config from "./test-package.config.mjs";
 
-// Install the actual tarball offline, without host peers, and load it through Pi's package
-// loader. Per-repo values and optional behavior checks live in test-package.config.mjs.
+// Install the actual tarball (cache-first, isolated npm config, no host peers) and load it
+// through Pi's package loader. Per-repo values and optional behavior checks live in test-package.config.mjs.
 const expected = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const lock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
 const root = await mkdtemp(join(tmpdir(), `${expected.name.split("/").pop()}-packed-`));
@@ -32,7 +32,7 @@ try {
     "npm",
     [
       "install",
-      "--offline",
+      "--prefer-offline",
       "--ignore-scripts",
       "--legacy-peer-deps",
       "--omit=dev",

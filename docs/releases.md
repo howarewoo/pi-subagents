@@ -203,8 +203,8 @@ is listed instead of its branch commits, and rebase merges may produce multiple 
    `publishConfig.access`.
 
    Package smoke testing inspects the real tar entries against the allowlist in
-   `scripts/test-package.config.mjs`. It then installs the tarball offline into a disposable
-   directory, with an empty npm user config and without host peers or lifecycle scripts. It
+   `scripts/test-package.config.mjs`. It then installs the tarball cache-first (`--prefer-offline`)
+   into a disposable directory, with an empty npm user config and without host peers or lifecycle scripts. It
    requires the whole installed manifest to equal `package.json`, the installed tree to equal
    the locked production dependencies with no duplicated host packages, required files to be
    present and packed README links to resolve. It loads the extension with the pinned Pi host
