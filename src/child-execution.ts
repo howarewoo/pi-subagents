@@ -658,10 +658,30 @@ export async function createChildExecution(
       if (event.type === "tool_execution_start") patch.activity = `Tool: ${event.toolName}`;
       if (event.type === "message_end" && event.message.role === "assistant") {
         const stats = session.getSessionStats();
+        // Public listeners run before the SDK persists message_end, so the stats can lag this message.
+        const leaf = session.sessionManager.getLeafEntry();
+        const pending =
+          leaf?.type === "message" && leaf.message === event.message
+            ? undefined
+            : event.message.usage;
+        const tokens = pending
+          ? {
+              input: stats.tokens.input + pending.input,
+              output: stats.tokens.output + pending.output,
+              cacheRead: stats.tokens.cacheRead + pending.cacheRead,
+              cacheWrite: stats.tokens.cacheWrite + pending.cacheWrite,
+              total:
+                stats.tokens.total +
+                pending.input +
+                pending.output +
+                pending.cacheRead +
+                pending.cacheWrite,
+            }
+          : stats.tokens;
         patch.telemetry = {
           ...entry.state.telemetry,
-          tokens: stats.tokens,
-          cost: stats.cost,
+          tokens,
+          cost: stats.cost + (pending?.cost.total ?? 0),
           ...(entry.state.fallback
             ? {
                 costIncomplete: entry.state.fallback.attempts.some(
