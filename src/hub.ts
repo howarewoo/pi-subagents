@@ -274,6 +274,7 @@ export function createHub(
       const paint = (text: string) => {
         const clipped = truncateToWidth(text, width);
         const padded = clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
+        // oxlint-disable-next-line no-control-regex -- strips the trailing SGR background reset
         const restoreBg = theme.style("", { bg: panelBg }).replace(/\x1b\[49m$/, "");
         return padded
           .split("\x1b[0m")

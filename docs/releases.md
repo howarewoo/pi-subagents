@@ -17,7 +17,7 @@ The repository workflows do not publish on ordinary main-branch pushes.
   are rejected until a separate channel policy is added.
 - Delegated execution requires **stable Pi 1.5.2 or newer**, including newer stable patch,
   minor and major versions. Standard build metadata has equal precedence. **Tested host:
-  Pi 1.5.2**; allowing future stable versions is not a tested compatibility guarantee.
+  Pi 1.6.0**; allowing other stable versions at or above the minimum is not a tested compatibility guarantee.
   Below-minimum, prerelease, malformed and unknown hosts fail closed at execution boundaries, not extension registration. Root status,
   stop/cleanup and diagnostics remain available if the host can load the module; arbitrary
   ancient SDK module-load compatibility is not promised. Wildcard host peer dependencies
@@ -197,15 +197,26 @@ is listed instead of its branch commits, and rebase merges may produce multiple 
    npm run test:package
    ```
 
-   Package smoke testing installs only runtime dependencies, without host peers or lifecycle
-   scripts, in a disposable directory. It checks the packed manifest, changelog, license,
-   production extension load and tool registration, not live-provider reliability.
+   `release:check` verifies the stable version, tag, changelog section and lockfile identity:
+   the lockfile name and root `name`, `version`, `engines`, `dependencies`,
+   `peerDependencies` and `devDependencies` must match `package.json`, with public
+   `publishConfig.access`.
+
+   Package smoke testing inspects the real tar entries against the allowlist in
+   `scripts/test-package.config.mjs`. It then installs the tarball cache-first (`--prefer-offline`)
+   into a disposable directory, with an empty npm user config and without host peers or lifecycle scripts. It
+   requires the whole installed manifest to equal `package.json`, the installed tree to equal
+   the locked production dependencies with no duplicated host packages, required files to be
+   present and packed README links to resolve. It loads the extension with the pinned Pi host
+   (`devDependencies["@earendil-works/pi-coding-agent"]`), checks the exact tool and command
+   registrations and the npm startup label, and runs the config's optional `verify` hook. It
+   does not test live-provider reliability.
 
 5. Submit the version/changelog changes as a human-reviewed release PR and merge it after CI.
    These instructions describe maintainer actions; local checks do not commit or publish.
 
 CI runs all checks and the package smoke test on Node 22.19.0 and Node 24. It uses pinned Pi
-1.5.2 development packages, not an implied matrix of all Pi versions.
+1.6.0 development packages, not an implied matrix of all Pi versions.
 
 ## First scoped npm publish only
 
@@ -252,7 +263,10 @@ dispatch. Its three GitHub-hosted jobs run in order:
    requires regular metadata/tarball files, checks the fixed package name, stable version,
    tag, commit and fixed tarball filename, and recomputes SHA-512 against validation's job
    output. A missing or mismatched download is fatal; download-action digest warnings are
-   not the publication gate. It neither installs dependencies nor extracts/executes archive
+   not the publication gate. It then requires the GitHub OIDC request context, refuses
+   `NPM_TOKEN`/`NODE_AUTH_TOKEN` and requires npm 11.5.1 or newer, so publication cannot
+   fall back to a stored token. `node scripts/publish-package.mjs <dir> --verify-only`
+   performs only the artifact checks, with no registry access or publication. It neither installs dependencies nor extracts/executes archive
    content, runs tests, or repacks. `npm publish --ignore-scripts` suppresses lifecycle scripts.
 3. **github-release** depends on npm success. It has `contents: write` but no OIDC permission,
    downloads only the selected notes artifact, and creates the GitHub release without checking

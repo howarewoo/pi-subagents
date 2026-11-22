@@ -7,6 +7,10 @@ import { join, resolve } from "node:path";
 // This helper is checked out from the release commit, never loaded from the artifact.
 // Expected identity/digest come from workflow context and validation outputs, not the download.
 const directory = process.argv[2];
+assert.ok(
+  process.argv.length === 3 || (process.argv.length === 4 && process.argv[3] === "--verify-only"),
+  "Expected artifact directory and optional --verify-only",
+);
 assert.ok(directory, "Supply the verified release artifact directory");
 const { RELEASE_TAG: tag, RELEASE_COMMIT: commit, RELEASE_INTEGRITY: expected } = process.env;
 assert.match(tag ?? "", /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
@@ -35,6 +39,29 @@ const integrity = `sha512-${createHash("sha512")
   .digest("base64")}`;
 assert.equal(integrity, expected, "Release tarball SHA512 does not match validation");
 
+if (process.argv[3] === "--verify-only") {
+  console.log(
+    `Verified ${pkg.name}@${pkg.version}: ${integrity} (no registry access or publication)`,
+  );
+  process.exit(0);
+}
+// No stored-token fallback. Only the protected GitHub job may request OIDC publication.
+assert.ok(
+  process.env.ACTIONS_ID_TOKEN_REQUEST_URL && process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
+  "GitHub OIDC context required",
+);
+assert.ok(
+  !process.env.NODE_AUTH_TOKEN && !process.env.NPM_TOKEN,
+  "Stored npm tokens are not allowed",
+);
+const [major, minor, patch] = execFileSync("npm", ["--version"], { encoding: "utf8" })
+  .trim()
+  .split(".")
+  .map(Number);
+assert.ok(
+  major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1))),
+  "npm >=11.5.1 required for trusted publishing",
+);
 const response = await fetch(
   `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${pkg.version}`,
 );

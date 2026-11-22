@@ -15,8 +15,8 @@ _Pinned Subagents widget at default capacity: 16 running tasks and 32 queued. Be
 
 ## Installation
 
-Requires **Node 22.19+** and **stable Pi 1.5.2 or newer**. Tested host: Pi 1.5.2;
-newer stable versions are allowed, not guaranteed compatible. Prerelease, older, malformed
+Requires **Node 22.19+** and **stable Pi 1.5.2 or newer**. Tested host: Pi 1.6.0;
+other stable versions at or above the minimum are allowed, not guaranteed compatible. Prerelease, older, malformed
 and unknown host versions are rejected before task reads, allocation or model requests.
 Wildcard host peer dependencies follow Pi's package format, not a compatibility promise.
 See [host support](docs/delegation-contract.md#supported-host) for version rules.
@@ -627,11 +627,12 @@ npm run test:package
 ```
 
 `npm run check` runs lint, formatting, typecheck, tests and the controlled SDK exercise.
-`npm run test:package` packs and installs the tarball in a temporary directory, then checks
-that Pi loads the production entrypoint and registers its tools. It needs registry access
-for runtime dependencies, does not use model credentials and leaves your Pi settings unchanged.
+`npm run test:package` packs the tarball, checks its files and installs it in a temporary
+directory, then checks that the pinned Pi host loads the production entrypoint and registers
+its tools and commands. It prefers the npm cache but may fetch registry metadata for runtime
+dependencies. It does not use model credentials and leaves your Pi settings unchanged.
 
-Oxlint checks correctness rules; warnings fail the lint command. Control-character regexes are allowed in terminal rendering code and tests because they match ANSI escape sequences. Run `npm run lint:fix` for safe lint fixes and `npm run format` to apply Oxfmt formatting. Formatting skips the generated lockfile and the managed Pullfrog workflow.
+Oxlint checks correctness rules; warnings fail the lint command. Control-character regexes are allowed in tests, and in terminal rendering code through inline `oxlint-disable` comments, because they match ANSI escape sequences. Run `npm run lint:fix` for safe lint fixes and `npm run format` to apply Oxfmt formatting. Formatting skips the generated lockfile and the managed Pullfrog workflow.
 
 Load the production entrypoint with `pi -e /absolute/path/to/src/pi-extended-subagents.ts`. Tests and examples use controlled providers without credentials or live inference.
 
@@ -675,3 +676,8 @@ delegation/<parent-session-id>/<task-id>/
 ```
 
 Completed generations keep their own immutable files. New generations use `<task-id>-g<generation>/`. Old `extended-subagents-proof` data is left untouched and is not loaded or migrated. SDK hosts must emit the public shutdown lifecycle before disposal; bare `session.dispose()` does not perform that cleanup.
+
+## License
+
+MIT. Includes a resource-loader shape adapted from Pi's SDK examples; see
+[LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).

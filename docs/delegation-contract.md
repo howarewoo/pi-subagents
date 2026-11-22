@@ -6,8 +6,8 @@ Reference for operators and extension/UI consumers. Authoritative types and exec
 
 Delegated execution requires **stable Pi 1.5.2 or newer**, checked through the SDK's public
 `VERSION` export. Newer stable patch, minor and major versions are allowed; standard build
-metadata has equal precedence. **Tested host: Pi 1.5.2**, independently of the minimum;
-allowing future stable versions is not a tested compatibility guarantee.
+metadata has equal precedence. **Tested host: Pi 1.6.0**, independently of the minimum;
+allowing other stable versions at or above the minimum is not a tested compatibility guarantee.
 Below-minimum, prerelease, malformed and unknown versions fail closed before launch/preflight
 content reads, child identity allocation, task-directory setup or child model requests.
 This covers `delegate_task`, compatibility `subagent` launches, resume, followup, revive,

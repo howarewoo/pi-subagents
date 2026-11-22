@@ -15,6 +15,8 @@ import {
 import { Text, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { DelegationCoordinator } from "./coordinator.ts";
 
+// Terminal sanitizers intentionally match control characters and escape sequences.
+/* oxlint-disable no-control-regex */
 export function safe(text: string): string {
   return text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
@@ -35,6 +37,8 @@ export function nativeText(text: string): string {
     .map((part, index) => (index % 2 ? part : safe(part)))
     .join("");
 }
+/* oxlint-enable no-control-regex */
+
 function safeValue(value: unknown): unknown {
   if (typeof value === "string") return safe(value);
   if (Array.isArray(value)) return value.map(safeValue);

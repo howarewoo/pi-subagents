@@ -6,7 +6,7 @@ It describes the current implementation, not a proposed architecture. For exact 
 
 ## System boundary
 
-The package is a TypeScript ES-module Pi extension. [package.json](package.json) registers [index.ts](index.ts) as its production entrypoint, re-exporting [src/pi-extended-subagents.ts](src/pi-extended-subagents.ts). The root index lets Pi show the npm package name without an entrypoint suffix; local installs retain path-derived labels. Node 22.19+ is required; the repository pins its development SDK dependencies to Pi 1.5.2. There is no separate daemon or remote worker service.
+The package is a TypeScript ES-module Pi extension. [package.json](package.json) registers [index.ts](index.ts) as its production entrypoint, re-exporting [src/pi-extended-subagents.ts](src/pi-extended-subagents.ts). The root index lets Pi show the npm package name without an entrypoint suffix; local installs retain path-derived labels. Node 22.19+ is required; the repository pins its development SDK dependencies to Pi 1.6.0. There is no separate daemon or remote worker service.
 
 The parent extension creates child sessions through Pi's public SDK. Each child has its own assignment, SDK conversation, explicit resources, execution budgets, and transcript. Children remain owned by the live parent runtime: they do not survive shutdown or reload, and saved transcripts do not restore the registry after restart.
 
