@@ -332,6 +332,53 @@ assignments within the parent runtime. This does not grant automatic tool/contex
 inheritance or promise compatibility with existing third-party workflow packages.
 See [orchestration boundaries](#why-orchestration-stays-with-the-caller).
 
+Scheduling is left out on purpose, so any scheduling extension can run alongside this one
+and be swapped for another. This extension registers no scheduling tool, timer or cron
+state. A scheduler therefore cannot collide with its tool names or duplicate its timers,
+and you are not locked in to one scheduler.
+
+[`@howarewoo/pi-schedule`](https://github.com/howarewoo/pi-schedule) is one standalone
+companion. It shares no code, imports, configuration or state with this extension, and
+each works without the other:
+
+```sh
+pi install npm:@howarewoo/pi-schedule
+```
+
+For periodic orchestrator check-ins:
+
+1. The parent launches async subagents with `subagent` (async by default) or a background
+   `delegate_task` call, and keeps each returned `id`.
+2. The parent schedules a check-in with pi-schedule's `schedule` tool. `cron` creates a
+   recurring job; `in` (for example `"in": "30m"`, minimum 1 minute) creates a one-shot
+   delay instead:
+
+   ```json
+   {
+     "action": "create",
+     "cron": "*/10 * * * *",
+     "name": "subagent-checkin",
+     "prompt": "Check each running subagent with action status and steer any that have stalled."
+   }
+   ```
+
+3. When the job fires, the parent wakes and calls `subagent` with
+   `{"action":"status","id":"<task id>"}`, then
+   `{"action":"steer","id":"<task id>","message":"…"}` for a stalled worker, or
+   `action:"stop"` for one that should not continue.
+4. Completed subagents still wake the parent on their own. Once the batch has finished,
+   the parent cancels the job with `schedule` `{"action":"cancel","id":"<job id>"}`
+   (`{"action":"list"}` shows job ids), so no further turns fire.
+
+Both extensions respect the same live-parent session lifetime, with no daemon or OS
+crontab. Scheduled jobs fire only while the session that created them is running, just as
+async subagents need their live parent. Quitting Pi stops jobs and aborts and drains
+subagents. pi-schedule restores saved jobs when a session is reopened (`/reload`,
+`/resume`, `pi -c`), but subagents aborted by shutdown or `/reload` are not revived, so
+cancel check-ins left over from an earlier runtime. Schedule from the parent: subagents do
+not load ambient extensions, so a child cannot call `schedule`. Every fire starts a parent
+model turn and costs tokens.
+
 ## Updates and rollback
 
 Let active subagents finish before updating, then restart Pi. Shutdown or `/reload` aborts
@@ -382,7 +429,7 @@ Compared with three community alternatives using their documentation. Nicobailon
 | Schema-validated results       | ✅ [Supported](#why-structured-results-require-explicit-submission)                                                      | ✅ Supported                                                                                                                                                                                     | ⚠️ Workflow agents only                                                                                                                                                                                                | — No equivalent caller-supplied result schema documented                               |
 | Managed Git worktrees          | 🚫 [By design; caller-managed worktrees supported](#why-workspaces-are-caller-managed-and-writes-are-caller-coordinated) | ✅ Supported                                                                                                                                                                                     | ✅ Supported                                                                                                                                                                                                           | ⚠️ Optional self-contained Git clone; not managed linked worktrees                     |
 | Workflow scripts               | 🚫 [By design; caller-owned](#why-orchestration-stays-with-the-caller)                                                   | ✅ Supported                                                                                                                                                                                     | ✅ Supported                                                                                                                                                                                                           | — Not assessed                                                                         |
-| Scheduled runs                 | 🚫 [By design; no scheduler](#why-orchestration-stays-with-the-caller)                                                   | ✅ Supported                                                                                                                                                                                     | ⚠️ Session-scoped agents only                                                                                                                                                                                          | — Not assessed                                                                         |
+| Scheduled runs                 | 🚫 [By design; pair any external scheduler](#why-workflows-and-scheduling-stay-external)                                 | ✅ Supported                                                                                                                                                                                     | ⚠️ Session-scoped agents only                                                                                                                                                                                          | — Not assessed                                                                         |
 
 Legend: ✅ Supported (stated design boundaries apply) · ⚠️ Supported with scope restrictions · 🚫 By design · — Not established by the cited documentation or not assessed.
 
@@ -422,7 +469,7 @@ and schema-validated results.
 
 Choose nicobailon for packaged review loops, council patterns, custom agents with
 per-agent memory, managed worktrees, durable missions or scheduled runs. This repo
-leaves workflows and workspace lifecycle to the caller, with no scheduler or restart
+leaves workflows and workspace lifecycle to the caller, with no built-in scheduler or restart
 recovery.
 
 #### Compared with tintinweb/pi-subagents
@@ -598,7 +645,8 @@ See the [coordination contract](docs/delegation-contract.md#live-parent-messagin
 The caller owns the larger plan and workspace preparation. This extension provides
 bounded assignments, batches and live coordination, not a workflow-script runtime or
 scheduling service. Scripts and recurring jobs need separate tooling and must respect
-the live-parent lifetime.
+the live-parent lifetime. See [external scheduling](#why-workflows-and-scheduling-stay-external)
+for pairing with any scheduler, such as `@howarewoo/pi-schedule`, for periodic check-ins.
 
 The native `subagent` interface uses the same executor; it does not interpret competitors'
 workflow scripts or custom agent definitions.
