@@ -16,6 +16,7 @@
     "url": "https://github.com/howarewoo/pi-subagents/issues"
   },
   "license": "MIT",
+  "author": "Adam Woo",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/howarewoo/pi-subagents.git"
@@ -48,12 +49,12 @@
     "pr-title:check": "node scripts/check-pr-title.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-schema": "1.5.2"
+    "@earendil-works/pi-schema": "1.6.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.5.2",
-    "@earendil-works/pi-coding-agent": "1.5.2",
-    "@earendil-works/pi-tui": "1.5.2",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@earendil-works/pi-coding-agent": "1.6.0",
+    "@earendil-works/pi-tui": "1.6.0",
     "@types/node": "26.6.6",
     "oxfmt": "0.78.0",
     "oxlint": "1.93.0",

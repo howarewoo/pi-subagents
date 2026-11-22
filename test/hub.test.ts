@@ -2304,12 +2304,12 @@ const hubBindings = (user: ConstructorParameters<typeof KeybindingsManager>[1] =
     },
     user,
   );
-const flat = (lines: string[]) =>
+const flat = (lines: readonly string[]) =>
   lines
     .map((line) => stripAnsi(line).replaceAll("│", " "))
     .join(" ")
     .replace(/\s+/g, " ");
-const footerRows = (lines: string[]) => {
+const footerRows = (lines: readonly string[]) => {
   const plain = lines.map(stripAnsi);
   return plain.slice(plain.findIndex((line) => line.startsWith("├")) + 1, -1);
 };

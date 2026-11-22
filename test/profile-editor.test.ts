@@ -74,7 +74,7 @@ const models: ProfileModelCatalog = {
     },
   ],
 };
-function bounds(lines: string[], width: number, height: number) {
+function bounds(lines: readonly string[], width: number, height: number) {
   assert.ok(lines.length <= height, `${lines.length} > ${height}`);
   for (const line of lines) {
     assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}: ${line}`);
