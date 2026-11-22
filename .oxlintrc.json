@@ -6,7 +6,7 @@
   },
   "overrides": [
     {
-      "files": ["src/thread.ts", "src/hub.ts", "test/**/*.ts"],
+      "files": ["test/**/*.ts"],
       "rules": {
         "no-control-regex": "off"
       }
