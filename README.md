@@ -176,6 +176,14 @@ _Synthetic native-component output; not a terminal screenshot or live-provider v
 
 Subagent Hub shows the task list beside the selected conversation using Pi's native renderers. On narrow terminals, the conversation takes the full width. Details shows results, artifacts, grants and usage; Tools shows full sanitized arguments and result text.
 
+Below the steering composer, a status row shows the selected task's current model and effort with its direct usage, like Pi's main footer:
+
+```text
+↑12k ↓3.1k R40k $0.042 41.2%/200k        anthropic/claude-opus-4-5 · effort high
+```
+
+Usage counts only that generation, not its descendants. Unknown values are omitted. In narrow layouts, the model and effort stay visible and usage parts drop first. The row follows fallback and prewalk model switches as they happen.
+
 The thread follows new output until you scroll up. Press End to follow again. The pinned Subagents widget appears after the first task starts. Compact summaries retain explicit failed counts, distinct from settled or cancelled tasks without relying on color. Summary-only fleets include a `/subagent-hub` hint within the widget's existing row budget at practical widths (for example, 55 columns). Closing Subagent Hub does not stop the work.
 
 The Hub and widget illustrations use native renderer output with a synthetic fleet filling the default 16 concurrent slots and 32-item queue. Four read-only audit leads each have three foreground descendants, reaching the default nesting depth of two. The queue represents two further 16-task root batches, not one oversized batch. These are illustrations, not terminal screenshots or live-provider stress-test evidence. Regenerate them with `node scripts/render-hub-hero.ts` and `node scripts/render-hub-hero.ts --widget`.
