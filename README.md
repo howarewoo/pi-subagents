@@ -100,6 +100,14 @@ Drain active tasks, install `npm:@howarewoo/pi-subagents@0.4.0`, then restart Pi
 configuration and the stable Pi 1.5.2 minimum/tested host are unchanged. Updating a checkout
 does not repair an already loaded runtime. See the [delegation contract](docs/delegation-contract.md).
 
+**0.5.0 migration (breaking):** subagents no longer pause after 30 minutes by default, and each
+resume starts fresh request/tool budgets; set `"scheduling": {"deadlineMs": 1800000}` in
+`~/.pi/agent/delegation.json` to keep the old pause. `/subagent-status` and `/subagent-steer`
+are removed (see below), and Subagent Profiles edits now autosave per item. Drain active tasks,
+install `npm:@howarewoo/pi-subagents@0.5.0`, then restart Pi. Existing configuration and the
+stable Pi 1.5.2 minimum/tested host are unchanged. See [CHANGELOG.md](CHANGELOG.md) for
+rollback steps.
+
 The extension adds three commands:
 
 ```text
@@ -345,11 +353,11 @@ An unpinned Git source tracks the repository's default branch, including unrelea
 For a reproducible npm installation or rollback, select an exact published version:
 
 ```sh
-pi install npm:@howarewoo/pi-subagents@0.2.0
+pi install npm:@howarewoo/pi-subagents@0.5.0
 ```
 
 For Git, select a published tag, for example
-`pi install git:github.com/howarewoo/pi-subagents@v0.2.0`.
+`pi install git:github.com/howarewoo/pi-subagents@v0.5.0`.
 Exact npm versions and Git tags stay pinned; updating does not advance them to the next release.
 Install a different version explicitly to change the pin.
 

@@ -1,6 +1,6 @@
 {
   "name": "@howarewoo/pi-subagents",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Pi subagent extension for supervised coding tasks with live monitoring, steering, and explicit tool permissions.",
   "keywords": [
     "agent-delegation",
