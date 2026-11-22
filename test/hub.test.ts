@@ -2672,7 +2672,10 @@ test("status line shows direct usage left and provider/model/effort right like P
   for (const [percent, expected] of [
     [41.2, "dim"],
     [70, "dim"],
+    [70.1, "warning"],
     [75, "warning"],
+    [90, "warning"],
+    [90.1, "error"],
     [95, "error"],
   ] as const) {
     const colors = new Map<string, string>();
@@ -2685,6 +2688,25 @@ test("status line shows direct usage left and provider/model/effort right like P
       (color, text) => (colors.set(text, color), text),
     );
     assert.equal(colors.get(`${percent.toFixed(1)}%/200k`), expected);
+  }
+
+  // Pi footer token thresholds.
+  for (const [count, text] of [
+    [999, "999"],
+    [1_000, "1.0k"],
+    [9_949, "9.9k"],
+    [10_000, "10k"],
+    [999_000, "999k"],
+    [1_000_000, "1.0M"],
+    [12_300_000, "12M"],
+  ] as const) {
+    const tokens = { input: count, output: 0, cacheRead: 0, cacheWrite: 0, total: count };
+    assert.match(
+      right({
+        telemetry: { ...unknown, tokens, context: { ...usage.context!, contextWindow: count } },
+      }),
+      new RegExp(`^↑${text.replace(".", "\\.")} 41\\.2%/${text.replace(".", "\\.")} `),
+    );
   }
 
   // Model/effort outrank usage; whole usage parts yield (cache, ↑, ↓, cost, context).
