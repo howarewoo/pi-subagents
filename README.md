@@ -680,7 +680,7 @@ directory, then checks that the pinned Pi host loads the production entrypoint a
 its tools and commands. It prefers the npm cache but may fetch registry metadata for runtime
 dependencies. It does not use model credentials and leaves your Pi settings unchanged.
 
-Oxlint checks correctness rules; warnings fail the lint command. Control-character regexes are allowed in tests, and in terminal rendering code through inline `oxlint-disable` comments, because they match ANSI escape sequences. Run `npm run lint:fix` for safe lint fixes and `npm run format` to apply Oxfmt formatting. Formatting skips the generated lockfile and the managed Pullfrog workflow.
+Oxlint checks correctness rules; warnings fail the lint command. Control-character regexes are allowed in tests, and in terminal rendering code through inline `oxlint-disable` comments, because they match ANSI escape sequences. Run `npm run lint:fix` for safe lint fixes and `npm run format` to apply Oxfmt formatting. Formatting skips the generated lockfile.
 
 Load the production entrypoint with `pi -e /absolute/path/to/src/pi-extended-subagents.ts`. Tests and examples use controlled providers without credentials or live inference.
 
