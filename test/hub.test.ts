@@ -178,6 +178,12 @@ test("widget counts each child state, sanitizes terminal content and shows only 
   assert.deepEqual(widget.render(100), [], "an empty replacement registry hides the widget again");
 });
 
+// Running snapshots render live elapsed time from Date.now(). Tests that compare whole frames
+// across renders pin the clock so a second boundary between renders cannot change the frame.
+function freezeClock(t: TestContext) {
+  t.mock.method(Date, "now", () => 61_000);
+}
+
 function snapshot(id: string, patch: Partial<ChildSnapshot> = {}): ChildSnapshot {
   return {
     id,
@@ -1938,6 +1944,7 @@ test("widget and unfiltered Hub count sessions, not profiles or latest identitie
 
 for (const binding of ["ctrl+o", "ctrl+g", "disabled"] as const) {
   test(`Hub global tool expansion respects ${binding}, input isolation and per-opening lifetime`, (t) => {
+    freezeClock(t);
     const coordinator = new DelegationCoordinator("unused", "root");
     const children = [snapshot("one"), snapshot("two", { generation: 2 })];
     t.mock.method(coordinator, "list", () => children);
@@ -2018,6 +2025,7 @@ for (const binding of ["ctrl+o", "ctrl+g", "disabled"] as const) {
       );
       hub.handleInput!("\t");
       const details = output();
+      assert.match(details, /Elapsed 60s/);
       hub.handleInput!(key);
       assert.equal(output(), details, "Details action unavailable");
       hub.handleInput!("\t");
@@ -2391,6 +2399,7 @@ for (const [name, user, close, steer, closing, inert] of [
 }
 
 test("Hub ? help is modal and observation-only, then restores selection, view and READING anchor", async (t) => {
+  freezeClock(t);
   const coordinator = new DelegationCoordinator("unused", "root");
   t.mock.method(coordinator, "list", () => [
     snapshot("alpha"),
@@ -2490,6 +2499,7 @@ test("Hub ? help is modal and observation-only, then restores selection, view an
       hub.handleInput!("\t");
       const previous = render();
       assert.match(previous.join("\n"), new RegExp(view));
+      if (view === "DETAILS") assert.match(previous.join("\n"), /Elapsed 60s/);
       hub.handleInput!("?");
       render();
       hub.handleInput!("\x1b");
