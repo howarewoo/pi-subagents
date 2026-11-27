@@ -24,7 +24,7 @@ The extension does not create or clean up Git worktrees, run workflow scripts or
 
 ## Project status
 
-Version 0.5.0, actively maintained. It needs Node 22.19 or newer and stable Pi 1.5.2 or newer, and is tested with Pi 1.6.0. Before 1.0, a minor release can change behavior, so read the [update notes](docs/installation.md#updates-and-rollback) before upgrading.
+Actively maintained, with releases below 1.0 (the npm badge shows the current version). It needs Node 22.19 or newer and stable Pi 1.5.2 or newer, and is tested with Pi 1.6.0. Before 1.0, a minor release can change behavior, so read the [update notes](docs/installation.md#updates-and-rollback) before upgrading.
 
 ## Install
 
