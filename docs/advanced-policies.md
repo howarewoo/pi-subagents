@@ -144,7 +144,7 @@ A boundary-only one-shot review changes the product meaning and already overlaps
 
 ## Production isolation — deferred and unimplemented
 
-Filesystem isolation remains deferred and unimplemented. Worktree lifecycle management is intentionally caller-owned: automatic worktree creation, commits, copying/apply and cleanup are outside scope, not planned extension features. See [why worktrees are managed externally](../README.md#why-worktrees-are-managed-externally).
+Filesystem isolation remains deferred and unimplemented. Worktree lifecycle management is intentionally caller-owned: automatic worktree creation, commits, copying/apply and cleanup are outside scope, not planned extension features. See [why worktrees are managed externally](workspaces.md#why-worktrees-are-managed-externally).
 
 Existing caller-supplied workspaces are supported through explicitly approved file-path and shell-cwd adaptation, preserving the original parent dispatcher and its hooks. Hooks see the actual transformed arguments, not a transparently rebound cwd. The public dispatcher still has no per-call cwd. This execution adapter does not coordinate shared writes and is not filesystem containment or an OS sandbox; see [the workspace contract](delegation-contract.md#explicit-working-directory).
 
